@@ -3,8 +3,8 @@
 ## 1. Overview
 
 The objective is to construct a "desert-island" computer that can be programmed entirely in baremetal
-C++ or assembly without relying on vendor SDKs or third-party libraries or drivers. The hardware design
-ensures that all peripherals can be driven by simple DMA, UART, SPI, or GPIO logic.
+C++ or assembly without relying on any third-party code: no reliance on libraries, drivers, or SDKs.
+The hardware design ensures that all peripherals use simple DMA, UART, SPI, or GPIO.
 
 ## 2. Hardware Summary
 
