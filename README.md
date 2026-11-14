@@ -1,6 +1,6 @@
 # Pico 2 Desert Island Computer
 
-## 1. Motivation & Core Philosophy
+## 1. Overview
 
 The objective is to construct a "desert-island" computer that can be programmed entirely in baremetal
 C++ or assembly without relying on vendor SDKs or third-party libraries or drivers. The hardware design
@@ -29,7 +29,7 @@ For now, power is provided to the Pico over the same built-in Micro USB port tha
 provides for no built-in power switch, so for now the computer is powered on by plugging in, and powered off by unplugging
 it.
 
-A later iteration will provide a power switch (over VSYS) and a physical reset button.
+A later iteration will provide a power switch (over VSYS).
 
 #### Programming notes (From AI, unverified)
 
