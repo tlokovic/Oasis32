@@ -1,5 +1,8 @@
 # Pico 2 Desert Island Computer
 
+![Assembled Left Side](images/assembled_left_side.jpg)[]
+![Assembled Left Side](images/assembled_right_side.jpg)[]
+
 ## 1. Overview
 
 The objective is to construct a "desert-island" computer that can be programmed entirely in baremetal
