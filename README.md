@@ -142,8 +142,6 @@ This is driven by one of the Pico's PWMs, and uses the following connections:
 | GND | - |
 | Pin 29 / GP22 / PWM3 A | + |
 
-For safety, add a current-limiting resistor, 100Ω to 220Ω, inline between the Pico and the Piezo's + pin.
-
 #### Programming notes (From AI, unverified)
 
 * **GPIO & Slice Mapping:** Set `GP22` `FUNCSEL` to `PWM` (Function 4) in `IO_BANK0` and clear `ISO` in `PADS_BANK0`. On the RP2350, `GP22` routes to **PWM Slice 3, Channel A** (`PWM3 A`).
