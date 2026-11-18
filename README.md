@@ -1,7 +1,7 @@
 # Pico 2 Desert Island Computer
 
-![Assembled Left Side](images/assembled_left_side.jpg)[]
-![Assembled Left Side](images/assembled_right_side.jpg)[]
+![Assembled Left Side](images/assembled_left_side.jpg)
+![Assembled Left Side](images/assembled_right_side.jpg)
 
 ## 1. Overview
 
