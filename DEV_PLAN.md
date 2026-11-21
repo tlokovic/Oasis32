@@ -1,46 +1,49 @@
 # Pico 2 Desert Island Computer Development Plan
 
-## Phase 1: Test Harness for the Hardware
+## Project Overview
 
-The goal of this phase is to confirm that the hardware is working and can be driven
-entirely without third-party code. This phase does *not* address the true complexity
-of developing an OS from scratch. 
+The objective of this project is to construct a self-contained computer powered by the Raspberry Pi Pico 2 that can be programmed completely from bare-metal RISC-V assembly with zero third-party software, drivers, or SDKs.
 
-To streamline bring-up and separate concerns, this phase is split into two distinct stages:
-1. **Stage 1 (Hardware Assembly & C++ Test Harness):** Incrementally solder and electrically verify each peripheral one by one using a progressive, non-blocking C++ test harness built on the Pico SDK. Once all peripherals are verified and operating concurrently, physical soldering and hardware bring-up are complete, allowing the physical tools to be cleared away.
-2. **Stage 2 (Pure Bare-Metal RISC-V Assembly Port):** With known-good hardware established, port the complete test harness to pure bare-metal RISC-V assembly with zero linked SDK or runtime code. This creates the golden foundation for Phase 2 (OS development).
-
-### Test Harness Behavior
-
-On startup, the test harness enters a **non-blocking cooperative polling loop** on a single RISC-V core. Rather than using blocking delays (which would starve UART receive FIFOs or cause visual stutter), the loop continuously polls hardware timestamps alongside peripheral status registers to perform the following concurrently:
-
-*  **LEDs:** Blink the Red, Green, and Blue LEDs one after the other, advancing once per second.
-*  **Piezo:** Beep the piezo once every five seconds for a duration of **100 ms at 1 kHz** (started and stopped non-blockingly via timer comparison).
-*  **Serial Heartbeat:** Print a changing message (such as a timestamp or counter value) to the debug serial port (`UART0`) once a second.
-*  **Serial Echo:** Immediately echo incoming keystrokes from the debug serial port (`UART0`) back to the serial port.
-*  **HDMI Display:** Maintain a **640×480 monochrome (1 bpp) framebuffer** in SRAM (8 pixels packed per byte = 38,400 bytes). On every main loop cycle, advance one pixel at a time (left-to-right, top-to-bottom, wrapping at the end of the screen), flipping that pixel's bit between off (`0`) and on (`1`).
-*  **Keyboard/Mouse:** When keyboard and mouse events appear from the CH9350 (`UART1`), decode the framed packets (and respond to any CH9350 status/polling handshakes if required) and print a summary to the debug serial port (`UART0`).
-*  **SD Card:** Treat the SD card as a raw block device (no FAT32 or filesystem assumptions; existing contents on the test card may be overwritten). Once a second, write a 512-byte block containing a changing payload to the SD card, then read it back to confirm that it matches. Cycle sequentially through a large ring of block addresses (e.g., thousands of blocks) to reduce flash wear and thoroughly exercise multi-block addressing.
+The roadmap is divided into three sequential phases:
+1. **Phase 1: Test Hardware with Pico C++ SDK:** Incrementally assemble, solder, and electrically verify the hardware peripherals using a non-blocking C++ test harness. Once complete, all soldering tools are put away and the physical platform is frozen as known-good.
+2. **Phase 2: Port Test Harness to RISC-V Assembly:** Re-implement the full test harness in pure, bare-metal RISC-V assembly with zero linked libraries or SDK code, establishing our hardware-abstraction foundation.
+3. **Phase 3: OS Development:** Build the native operating system, interactive shell, filesystem, and programming environment on top of the bare-metal assembly foundation.
 
 ---
 
-## Stage 1: Hardware Bring-Up & Progressive C++ Test Harness
+## Phase 1: Test Hardware with Pico C++ SDK
 
-All C++ development lives in `test_harness/cpp/`.
+The goal of this phase is to confirm that the hardware is functioning and electrically sound. To eliminate ambiguous faults (distinguishing bad solder joints from register or compiler bugs), all hardware bring-up is conducted in C++ using the official Raspberry Pi Pico SDK (but no other libraries).
 
-### Implementation Rules
-* **Toolchain & Architecture:** Target the RP2350 Hazard3 RISC-V architecture (`PICO_PLATFORM=rp2350-riscv`, `PICO_BOARD=pico2`) using the official Pico SDK.
-* **Strictly Non-Blocking Runtime:** The main loop must be 100% non-blocking. Blocking delays (`sleep_ms`, tight busy-waits on UART/SPI) are prohibited in the main loop to prevent FIFO overruns on the CP2102 and CH9350 and to exercise true multi-peripheral concurrency. (Short, bounded blocking waits are permitted strictly during one-time boot/initialization).
-* **Progressive Reduction:** As each subsystem is brought up, code may optionally be reduced from high-level SDK helpers down to raw register operations (`sio_hw`, `uart0_hw`, etc.) to serve as a direct template for Stage 2.
+Peripherals are attached and tested one at a time. If an addition introduces a fault, the issue is isolated immediately to the newly attached component.
+
+### Test Harness Behavior
+
+All development in Phase 1 lives in `test_harness/cpp/`. 
+
+On startup, the test harness enters a **non-blocking cooperative polling loop** on a single RISC-V core (`rp2350-riscv`). Rather than using blocking delays (which would starve UART receive FIFOs or cause visual stutter), the loop continuously checks hardware timestamps alongside peripheral status registers to run the following tasks concurrently:
+
+* **LEDs:** Blink the Red, Green, and Blue LEDs sequentially, advancing once per second.
+* **Piezo:** Beep the piezo once every five seconds for a duration of **100 ms at 1 kHz** (started and stopped non-blockingly via timer comparison).
+* **Serial Heartbeat:** Print an incrementing timestamp/counter message to the debug serial port (`UART0`) once a second.
+* **Serial Echo:** Immediately echo incoming keystrokes from `UART0` back to the host terminal.
+* **HDMI Display:** Maintain a **640×480 monochrome (1 bpp) framebuffer** in SRAM (38,400 bytes). On every loop iteration, advance one pixel at a time (left-to-right, top-to-bottom) and flip that pixel's bit between off (`0`) and on (`1`) to generate continuous video activity.
+* **Keyboard/Mouse:** Poll the CH9350 bridge (`UART1`) for framed serial HID packets, decode incoming events, and log a human-readable summary to the debug serial port (`UART0`).
+* **SD Card:** Treat the SD card as a raw block device over SPI. Once a second, write a 512-byte test pattern to a rotating block address, read it back, verify data integrity, and log pass/fail status over `UART0`.
+
+### C++ Constraints & Toolchain
+* **Target Architecture:** RP2350 Hazard3 RISC-V (`PICO_PLATFORM=rp2350-riscv`, `PICO_BOARD=pico2`).
+* **Strictly Non-Blocking Runtime:** The main loop must never use `sleep_ms()` or blocking busy-waits. Short, bounded waits are restricted strictly to one-time boot initialization (e.g., crystal oscillator lock, SD card power-up handshake).
+* **Progressive Reduction:** Where helpful, high-level SDK helper routines may be progressively refactored down to direct hardware register operations (`sio_hw`, `uart0_hw`, etc.) to serve as direct blueprints for Phase 2.
 
 ### Sub-Phase 1a: Host-Side Tools & Baseline C++ Blink
 
 #### Hardware
-Bare, unmodified Raspberry Pi Pico 2 (using onboard LED on `GPIO25`).
+Bare, unmodified Raspberry Pi Pico 2 (using the onboard LED on `GPIO25`).
 
 #### Software & Setup
-* Install the Raspberry Pi Pico extension in Antigravity IDE / VS Code as described in *Getting Started with Pico* Section 3 to obtain the Pico SDK, RISC-V toolchain (`riscv32-unknown-elf`), CMake, Ninja, and `picotool`.
-* Configure `test_harness/cpp/` with a `CMakeLists.txt` targeting `rp2350-riscv` and `pico2`.
+* Install the Raspberry Pi Pico extension in Antigravity IDE / VS Code to configure the Pico SDK, RISC-V toolchain (`riscv32-unknown-elf`), CMake, Ninja, and `picotool`.
+* Configure `test_harness/cpp/` with a standalone `CMakeLists.txt` targeting `rp2350-riscv` and `pico2`.
 * Expose standard VS Code build tasks in `.vscode/tasks.json`:
   * **Build C++ (RISC-V):** `cmake --build build/cpp --target cpp_harness`
   * **Flash C++ (RISC-V):** `picotool load build/cpp/cpp_harness.uf2 -fx`
@@ -100,30 +103,28 @@ Solder the SD card breakout (`SPI0`, `GP2–GP6`).
 
 ---
 
-## Stage 2: Pure Bare-Metal RISC-V Assembly Port
+## Phase 2: Port Test Harness to RISC-V Assembly
 
-With the hardware 100% verified by the C++ golden reference, we transition to pure bare-metal assembly. All code lives in `test_harness/asm/`.
+With physical hardware integrity proven and frozen, the entire test harness is ported to pure bare-metal RISC-V assembly in `test_harness/asm/`. The assembly version reproduces the exact same concurrent polling behavior as the C++ harness, proving full bare-metal control of all peripherals without any linked libraries or third-party code.
 
-### Implementation Rules
-* **Zero Linked SDK / C Runtime:** Standalone assembly only (`-nostdlib`, `-nostartfiles`).
-* **Toolchain & Linker:** Standalone `CMakeLists.txt` using `riscv32-unknown-elf-gcc`/`as`/`ld` with `-march=rv32imac_zicsr_zifencei -mabi=ilp32` and a custom bare-metal linker script (`memmap.ld`).
-* **Boot Metadata:** Hand-crafted `IMAGE_DEF` block in the first 4 KB of flash declaring the RP2350 Hazard3 architecture and entry point, converted to `.uf2` via `picotool`.
-* **VS Code Build Tasks:**
-  * **Assemble Bare-Metal (RISC-V):** `cmake --build build/asm --target asm_harness`
-  * **Flash Bare-Metal (RISC-V):** `picotool load build/asm/asm_harness.uf2 -fx`
-
-### Progressive Assembly Porting Steps
-1. **2a: Bare-Metal Setup & Blink:** Standalone `IMAGE_DEF`, memory map, reset un-gating (`RESETS`), pad isolation clearing (`PADS_BANK0`), and GPIO toggle loop for `GPIO25`.
-2. **2b: Clocks, Timers, LEDs & Piezo:** Standalone `XOSC` and `PLL_SYS` configuration, RISC-V CSR/Timer-based non-blocking loop, RGB LED sequence, and PWM/timer piezo beeper.
-3. **2c: Serial Port (`UART0`):** Direct register programming of PL011 `UART0` for startup banner, heartbeat, and non-blocking FIFO echo.
-4. **2d: Display (`HSTX` + DMA):** Pure bare-metal HSTX register configuration, TMDS crossbar routing, ping-pong DMA setup, and pixel flipping loop.
-5. **2e: USB Host (`UART1`):** Direct PL011 `UART1` register polling and packet parser for CH9350 HID frames.
-6. **2f: SD Card (`SPI0`):** Direct PL022 `SPI0` register operations for SD command sequence, block write/read, and verification reporting.
-
-At the conclusion of Stage 2, the assembly test harness completely mirrors the C++ test harness, proving total bare-metal control of the hardware and forming the starting point for Phase 2.
+### Key Assembly-Specific Architecture & Details
+* **Zero Linked SDK / Runtime:** Pure bare-metal assembly compiled with `riscv32-unknown-elf-gcc`/`as`/`ld` using `-nostdlib -nostartfiles -march=rv32imac_zicsr_zifencei -mabi=ilp32`.
+* **Boot Metadata (`PICOBIN`):** Embed a hand-crafted `IMAGE_DEF` block in the first 4 KB of flash declaring the RP2350 Hazard3 architecture, vector table, and execution entry point, converted into a `.uf2` via `picotool`.
+* **Custom Linker Script (`memmap.ld`):** Explicitly maps flash (`0x10000000`), SRAM banks (`0x20000000`), stack pointer, and the 1 bpp framebuffer address space.
+* **Direct Hardware Initialization:**
+  * **Clocks:** Switch from boot `ROSC` to 12 MHz `XOSC`, configure `PLL_SYS` for system execution and HSTX pixel clock generation.
+  * **Subsystem Un-gating:** Explicitly clear reset bits in `RESETS->RESET` and poll `RESETS->RESET_DONE` for all active peripherals (`IO_BANK0`, `PADS_BANK0`, `UART0`, `UART1`, `SPI0`, `PWM`, `HSTX`, `DMA`).
+  * **Pad Isolation:** Explicitly clear the RP2350 pad isolation latch bit (`ISO`, bit 8) in `PADS_BANK0` across all configured pins.
+* **Non-Blocking Architecture:** Replicate the C++ non-blocking state machine using RISC-V CSR/hardware timers and peripheral FIFO/status flags.
 
 ---
 
-## Phase 2: OS Foundation
+## Phase 3: OS Development
 
-TODO
+With the bare-metal assembly drivers and execution harness established, Phase 3 builds the native "desert-island" operating system in bare-metal assembly.
+
+### Core Objectives
+* **Interactive Text Console:** Connect keyboard input from the CH9350 and display output via the DVI Sock to implement a text-mode terminal with an integrated font renderer and line-editing capabilities.
+* **Command Shell & Monitor:** Provide an interactive REPL with built-in commands for memory inspection/modification, hardware diagnostics, register dumping, and execution control.
+* **Block Storage & Filesystem:** Expand the raw SPI SD card driver with a filesystem driver (e.g., standard FAT32 or a lightweight custom filesystem) to persist files, configuration, and scripts.
+* **Program Loading & Execution:** Implement an execution loader capable of reading binary programs from storage into RAM, transferring execution, and returning cleanly to the OS shell.
