@@ -70,26 +70,73 @@ from software. This can be driven with PIO or, on the Pico 2, with HSTX (High-Sp
 
 ### Keyboard/Mouse: CH9350 Dual USB Host-to-UART ASIC
 
-This must be configured (with DIP switches) in "Lower Computer mode".
+The CH9350 acts as a hardware bridge between standard USB HID peripherals (keyboards, mice) and an asynchronous serial UART interface (`CH9350DS.PDF §5, pp. 4–13`). It handles USB enumeration and protocol negotiation entirely in silicon, translating HID reports into framed serial datagrams over UART.
 
-This device is accessed via UART, which should be configured for 115200 baud, 8N1 (8 data bits, no parity, 1 stop bit).
+#### Hardware DIP Switch Configuration
 
-It uses the following connections:
+The module features a 5-position DIP switch that directly sets the strapping configuration pins of the CH9350 (`CH9350DS.PDF §5, pp. 3–4`).
 
-| Pico  | CH9350 |
-| ------------- | ------------- |
-| Pin 39 / VSYS 5V | 5V |
-| GND | GND |
-| Pin 26 / GP20 / UART1 TX | RX |
-| Pin 27 / GP21 / UART1 RX | TX |
+##### Switch Orientation & Logic Levels
+* **Left Position (marked `1` on PCB, away from `ON`):** Switch OPEN / OFF. The CH9350 internal pull-ups pull the pin to **3.3V Logic High (`1`)**.
+* **Right Position (marked `0` on PCB, towards `ON`):** Switch CLOSED / ON. Shorts the strapping pin to **GND Logic Low (`0`)**.
 
-#### Programming notes (From AI, unverified)
+##### Required Switch Settings: Lower Computer Mode, 115200 Baud, State 2
 
-* **GPIO & Pad Configuration:** Set `GP20` and `GP21` `FUNCSEL` to `UART` (Function 2) in `IO_BANK0`. In `PADS_BANK0`, clear `ISO` on both pins, enable input (`IE`) on `GP21`, and enable the internal pull-up resistor (`PUE`) on `GP21` (`UART1 RX`) so the receive line idles cleanly at logic high (`1`) even while the CH9350 is booting or disconnected.
-* **UART1 Setup:** Ensure `CLK_PERI` is running and deassert `UART1` in `RESETS`. Compute the integer (`UARTIBRD`) and fractional (`UARTFBRD`) baud rate divisors from `CLK_PERI` for `115200` baud:
+To operate as a standalone USB host streaming clean HID events to the Pico 2, configure the 5 switches as follows:
+
+| Switch # | Strapping Pin | Target Level | Physical Position | Configuration Function & Datasheet Citation |
+|:---:|:---:|:---:|:---:|:---|
+| **1** | `SEL` | **`1`** | **LEFT** | **Lower Computer (Host) Mode** (`CH9350DS.PDF §5, Pin 45, p. 4`). Configures the chip as a USB Host to manage keyboard and mouse devices. (`0` = Upper Computer / USB Device mode). |
+| **2** | `BA1` | **`1`** | **LEFT** | **Baud Rate Bit 1 = High** (`CH9350DS.PDF §7.1.7, Table 7-2, p. 6`). |
+| **3** | `BA0` | **`1`** | **LEFT** | **Baud Rate Bit 0 = High** (`BA1:BA0 = 11` selects **115,200 baud**). |
+| **4** | `S1` | **`1`** | **LEFT** | **Working State Bit 1 = High** (`CH9350DS.PDF §7.1.6, Table 7-1, p. 6`). |
+| **5** | `S0` | **`0`** | **RIGHT** | **Working State Bit 0 = Low** (`S1:S0 = 10` selects **State 2**). |
+
+```text
+       [ 1 ]       [ 0 ]
+         │           │
+     ┌───┴───────────┴───┐
+  1  │ [███]             │  SEL  = 1 (Host Mode)
+  2  │ [███]             │  BA1  = 1 \_ 115,200 Baud
+  3  │ [███]             │  BA0  = 1 /
+  4  │ [███]             │  S1   = 1 \_ State 2 (Fixed HID Datagrams)
+  5  │             [███] │  S0   = 0 /
+     └───────────────────┘
+```
+*(Summary: **Push levers 1, 2, 3, and 4 to the LEFT; leave lever 5 to the RIGHT**).*
+
+##### Why State 2 (`S1=1, S0=0`)?
+* **Default State 0/1 (`S1=1, S0=1`):** Designed for paired CH9350 extension cables. In State 0/1, the lower computer continuously transmits status request ping packets (`0x57 0xAB 0x82 0xA*`) every 66 ms to 1 s and expects a handshake reply frame from the host, with variable-length `0x88` key frames requiring checksum verification (`CH9350DS.PDF §7.2.3.1, p. 9`).
+* **State 2 (`S1=1, S0=0`):** Designed for direct microcontroller integration (`CH9350DS.PDF §7.2.3.3, pp. 9–11`). It operates strictly **one-way** from CH9350 to Pico without any handshaking, polling frames, or keep-alive replies:
+  * **Keyboard Datagram (Fixed 11 bytes):**
+    ```text
+    0x57 0xAB 0x01 [Mod] 0x00 [Key1] [Key2] [Key3] [Key4] [Key5] [Key6]
+    ```
+    Where `Mod` is the standard 8-bit USB modifier bitmap (Ctrl, Shift, Alt, GUI) followed by up to 6 pressed USB HID keycodes.
+  * **Relative Mouse Datagram (Fixed 7 bytes):**
+    ```text
+    0x57 0xAB 0x02 [Buttons] [dX] [dY] [Wheel]
+    ```
+
+#### Connections to Pico 2
+
+| CH9350 Module Pin | Pico 2 Pin | Electrical Function |
+|:---|:---|:---|
+| **`5V`** | **Pin 39 (`VSYS`)** | Supplies 5V VBUS power to the connected USB keyboard and mouse. |
+| **`GND`** | **Pin 38 or Pin 8 (`GND`)** | Common system ground. |
+| **`TX`** | **Pin 27 (`GP21` / `UART1 RX`)** | Asynchronous serial datagram stream from CH9350 into Pico. |
+| **`RX`** | **Pin 26 (`GP20` / `UART1 TX`)** | Pico transmit line back to CH9350 (optional in State 2, but wired for completeness). |
+| **`485控制`** | *Leave unconnected* | `TNOW` transmit status pin used for half-duplex RS-485 direction switching. |
+
+#### Programming Notes
+
+* **GPIO & Pad Configuration:** Set `GP20` and `GP21` `FUNCSEL` to `UART` (Function 2) in `IO_BANK0` (`rp2350-datasheet.pdf §9.4, Table 677`). In `PADS_BANK0`, clear `ISO` on both pins, enable input (`IE`) on `GP21`, and enable the internal pull-up resistor (`PUE`) on `GP21` (`UART1 RX`) so the receive line idles cleanly at logic high (`1`) even while the CH9350 is booting or disconnected (`rp2350-datasheet.pdf §9.11.3, Table 708`).
+* **UART1 Setup:** Ensure `CLK_PERI` is running and deassert `UART1` in `RESETS` (`rp2350-datasheet.pdf §7.5.3, Table 567`). Compute the integer (`UARTIBRD`) and fractional (`UARTFBRD`) baud rate divisors from `CLK_PERI` for `115200` baud:
   $$\text{Baud Rate Divisor} = \frac{f_{\text{clk\_peri}}}{16 \times 115200}$$
   Configure `UARTLCR_H` for 8-bit words (`WLEN = 0b11`), no parity, 1 stop bit, and enable the 32-byte hardware FIFOs (`FEN = 1`) before enabling `UARTEN`, `TXE`, and `RXE` in `UARTCR`.
-* **Datagram Framing & Buffering:** In Lower Computer mode, the CH9350 encapsulates USB HID reports into multi-byte serial frames prefixed with a 2-byte synchronization header (`0x57`, `0xAB`), followed by an opcode/status byte, HID report payload (keyboard modifier bitmask + keycodes, or mouse buttons + X/Y/wheel deltas), and a checksum/sequence byte. Because mouse movements and rapid keystrokes arrive asynchronously in ~11-byte bursts, enable the `UART1` RX interrupt (`UARTIMSC`: `RXIM` and `RTIM` receive timeout) or a ring-buffered DMA channel (`DREQ_UART1_RX`) so bytes are never lost while the CPU is busy.
+* **Datagram Parsing:** In State 2, poll `UART1` or service its RX interrupt by scanning for the two sync bytes (`0x57`, `0xAB`). When detected, read the type byte:
+  * If `0x01`: Read the remaining 8 bytes of standard USB BIOS keyboard scan codes.
+  * If `0x02`: Read the remaining 4 bytes of relative mouse movement (buttons, $\Delta X$, $\Delta Y$, wheel).
 
 ### Storage: SD Card Breakout Board
 
