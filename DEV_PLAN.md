@@ -44,9 +44,6 @@ Bare, unmodified Raspberry Pi Pico 2 (using the onboard LED on `GPIO25`).
 #### Software & Setup
 * Install the Raspberry Pi Pico extension in Antigravity IDE / VS Code to configure the Pico SDK, RISC-V toolchain (`riscv32-unknown-elf`), CMake, Ninja, and `picotool`.
 * Configure `test_harness/cpp/` with a standalone `CMakeLists.txt` targeting `rp2350-riscv` and `pico2`.
-* Expose standard VS Code build tasks in `.vscode/tasks.json`:
-  * **Build C++ (RISC-V):** `cmake --build build/cpp --target cpp_harness`
-  * **Flash C++ (RISC-V):** `picotool load build/cpp/cpp_harness.uf2 -fx`
 * Implement non-blocking timer-based blink on `GPIO25` and verify flash & execution on hardware.
 
 ### Sub-Phase 1b: Solder LEDs, Piezo, and Reset

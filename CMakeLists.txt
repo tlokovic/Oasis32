@@ -34,3 +34,4 @@ project(Pico2DesertIsland C CXX ASM)
 pico_sdk_init()
 
 add_subdirectory(test_harness/cpp)
+add_subdirectory(test_harness/asm)
