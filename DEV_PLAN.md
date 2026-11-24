@@ -54,7 +54,7 @@ Solder the status LEDs (Red, Green, Blue), Piezo buzzer, and momentary reset but
 #### Software
 * Configure a free-running hardware timer or microsecond counter for non-blocking scheduling.
 * Add the 1-second cycling Red -> Green -> Blue sequence to the non-blocking loop.
-* Add the once-every-5-seconds 100 ms @ 1 kHz piezo beep (driven via PWM or timer-toggled GPIO).
+* Add the once-every-3-seconds 100 ms @ 1 kHz piezo beep (driven via PWM or timer-toggled GPIO).
 * Verify that pressing the reset button cleanly restarts the sequence (and enters `BOOTSEL` mode when held with `BOOTSEL`).
 
 ### Sub-Phase 1c: Solder Serial Port (CP2102N Debug Port)

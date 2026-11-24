@@ -7,7 +7,10 @@ add_executable(test_harness_cpp
     )
 
 # pull in common dependencies
-target_link_libraries(test_harness_cpp pico_stdlib)
+target_link_libraries(test_harness_cpp
+    pico_stdlib
+    hardware_pwm
+)
 
 if (PICO_CYW43_SUPPORTED)
     target_link_libraries(test_harness_cpp pico_cyw43_arch_none)
