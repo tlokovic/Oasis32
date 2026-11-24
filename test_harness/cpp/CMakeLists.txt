@@ -9,6 +9,7 @@ add_executable(test_harness_cpp
 # pull in common dependencies
 target_link_libraries(test_harness_cpp
     pico_stdlib
+    hardware_dma
     hardware_pwm
     hardware_uart
 )

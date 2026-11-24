@@ -1,5 +1,5 @@
 /**
- * Pico 2 Desert Island Computer - Phase 1 Hardware Test Harness (Sub-Phase 1c)
+ * Pico 2 Desert Island Computer - Phase 1 Hardware Test Harness (Sub-Phase 1d)
  *
  * Non-blocking cooperative polling loop verifying:
  *   - Status LEDs: Red (GP26) -> Green (GP27) -> Blue (GP28), advancing every 1 s
@@ -9,24 +9,43 @@
  *       * Boot banner on startup
  *       * 1-second incrementing heartbeat message
  *       * Non-blocking RX polling with dec/hex/bin formatted echo
+ *   - HDMI Display (Adafruit DVI Sock): HSTX on GP12-GP19, 640x480 @ 60 Hz
+ *       * 1 bpp monochrome framebuffer in SRAM (38,400 bytes)
+ *       * Ping-pong DMA paced by DREQ_HSTX with hardware TMDS encoding
+ *       * Static 1 px border + 20x15 (32x32 px) grid + bouncing 32x32 XOR box
  */
 
 #include <stdbool.h>
 #include <stdint.h>
 
 #include "hardware/clocks.h"
+#include "hardware/dma.h"
 #include "hardware/gpio.h"
+#include "hardware/irq.h"
 #include "hardware/pwm.h"
+#include "hardware/structs/bus_ctrl.h"
+#include "hardware/structs/hstx_ctrl.h"
+#include "hardware/structs/hstx_fifo.h"
 #include "hardware/uart.h"
 #include "pico/stdlib.h"
 
 // Hardware pin assignments (see README.md)
 #define PIN_UART0_TX     0u   // UART0 TX (rp2350-datasheet.pdf §9.4, Table 677)
 #define PIN_UART0_RX     1u   // UART0 RX (rp2350-datasheet.pdf §9.4, Table 677)
+#define PIN_DVI_FIRST   12u   // GP12-GP19: HSTX (Function 0, Table 677)
+#define PIN_DVI_COUNT    8u
 #define PIN_PIEZO       22u   // PWM3 A   (rp2350-datasheet.pdf §12.5.2, Table 1183)
 #define PIN_LED_RED     26u
 #define PIN_LED_GREEN   27u
 #define PIN_LED_BLUE    28u
+
+// System / HSTX clocking:
+//   640x480 @ 60 Hz pixel clock = 800 * 525 * 60 = 25.2 MHz
+//   TMDS serial bit rate = 10 * 25.2 MHz = 252 Mbps per lane
+//   HSTX DDR clock = 252 / 2 = 126 MHz (2 bits per HSTX clock cycle)
+//   Running clk_sys = 126 MHz lets clk_hstx derive directly from clk_sys (1:1).
+#define SYS_CLOCK_KHZ           126000u
+#define SYS_CLOCK_HZ            (SYS_CLOCK_KHZ * 1000u)
 
 // Debug UART0 configuration (PL011, rp2350-datasheet.pdf §12.1)
 #define UART_DEBUG              uart0
@@ -39,6 +58,14 @@
 #define HEARTBEAT_INTERVAL_US    1000000ull  // 1 s
 #define PIEZO_PERIOD_US          3000000ull  // 3 s
 #define PIEZO_DURATION_US         100000ull  // 100 ms
+#define VIDEO_STEP_INTERVAL_US     16667ull  // ~60 px/s (1 px per 60 Hz frame)
+
+// Video test pattern geometry: 1 px outer border + 20x15 (32x32 px) grid + 32x32 XOR box
+#define BOX_SIZE_PX                   32u
+#define BOX_MIN_X                      1u
+#define BOX_MAX_X                (MODE_H_ACTIVE_PIXELS - 1u - BOX_SIZE_PX)  // 607
+#define BOX_MIN_Y                      1u
+#define BOX_MAX_Y                (MODE_V_ACTIVE_LINES  - 1u - BOX_SIZE_PX)  // 447
 
 // PWM configuration for 1 kHz piezo tone:
 //   f_pwm = f_sys / ((TOP + 1) * DIV)
@@ -52,11 +79,86 @@
 #define PIEZO_PWM_LEVEL_ON     ((PIEZO_PWM_WRAP + 1u) / 2u)
 #define PIEZO_PWM_LEVEL_OFF          0u
 
+// 640x480 @ 60 Hz DVI/VGA timing (active-low HSYNC and VSYNC)
+#define MODE_H_FRONT_PORCH       16u
+#define MODE_H_SYNC_WIDTH        96u
+#define MODE_H_BACK_PORCH        48u
+#define MODE_H_ACTIVE_PIXELS    640u
+
+#define MODE_V_FRONT_PORCH       10u
+#define MODE_V_SYNC_WIDTH         2u
+#define MODE_V_BACK_PORCH        33u
+#define MODE_V_ACTIVE_LINES     480u
+#define MODE_V_TOTAL_LINES      (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + \
+                                 MODE_V_BACK_PORCH + MODE_V_ACTIVE_LINES)
+
+#define FB_WORDS_PER_LINE       (MODE_H_ACTIVE_PIXELS / 32u)  // 20 words = 80 bytes
+
+// HSTX Command Expander opcodes (rp2350-datasheet.pdf §12.11.5, p. 1119)
+#define HSTX_CMD_RAW            (0x0u << 12u)
+#define HSTX_CMD_RAW_REPEAT     (0x1u << 12u)
+#define HSTX_CMD_TMDS           (0x2u << 12u)
+#define HSTX_CMD_TMDS_REPEAT    (0x3u << 12u)
+#define HSTX_CMD_NOP            (0xfu << 12u)
+
+// 10-bit TMDS control symbols (DVI 1.0 Table 3-5): C1 = VSYNC, C0 = HSYNC on Lane 0
+#define TMDS_CTRL_00            0x354u
+#define TMDS_CTRL_01            0x0ABu
+#define TMDS_CTRL_10            0x154u
+#define TMDS_CTRL_11            0x2ABu
+
+#define SYNC_V0_H0  ((TMDS_CTRL_00 << 20u) | (TMDS_CTRL_00 << 10u) | TMDS_CTRL_00)
+#define SYNC_V0_H1  ((TMDS_CTRL_00 << 20u) | (TMDS_CTRL_00 << 10u) | TMDS_CTRL_01)
+#define SYNC_V1_H0  ((TMDS_CTRL_00 << 20u) | (TMDS_CTRL_00 << 10u) | TMDS_CTRL_10)
+#define SYNC_V1_H1  ((TMDS_CTRL_00 << 20u) | (TMDS_CTRL_00 << 10u) | TMDS_CTRL_11)
+
+// Ping-pong DMA channels for continuous HSTX scanline streaming
+#define DMACH_PING              0u
+#define DMACH_PONG              1u
+
 static const uint LED_PINS[3] = {
     PIN_LED_RED,
     PIN_LED_GREEN,
     PIN_LED_BLUE,
 };
+
+// 640x480 1 bpp monochrome framebuffer in SRAM (480 * 20 * 4 = 38,400 bytes)
+// Bit (x & 31) of framebuffer[y][x >> 5] controls pixel (x, y).
+static uint32_t framebuffer[MODE_V_ACTIVE_LINES][FB_WORDS_PER_LINE];
+
+// Pre-built HSTX command lists for blanking lines and active-line sync prefix
+static const uint32_t vblank_line_vsync_off[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,
+    SYNC_V1_H1,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,
+    SYNC_V1_H0,
+    HSTX_CMD_RAW_REPEAT | (MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS),
+    SYNC_V1_H1,
+};
+
+static const uint32_t vblank_line_vsync_on[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,
+    SYNC_V0_H1,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,
+    SYNC_V0_H0,
+    HSTX_CMD_RAW_REPEAT | (MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS),
+    SYNC_V0_H1,
+};
+
+static const uint32_t vactive_line_prefix[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,
+    SYNC_V1_H1,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,
+    SYNC_V1_H0,
+    HSTX_CMD_RAW_REPEAT | MODE_H_BACK_PORCH,
+    SYNC_V1_H1,
+    HSTX_CMD_TMDS | MODE_H_ACTIVE_PIXELS,
+};
+
+// DMA scanline state (updated exclusively inside dma_irq_handler in SRAM)
+static bool dma_pong_next = false;
+static uint32_t v_scanline = 2u;   // Lines 0 and 1 are pre-loaded on startup
+static bool vactive_cmdlist_posted = false;
 
 static uint piezo_slice;
 static uint piezo_channel;
@@ -67,6 +169,173 @@ static uint piezo_channel;
 static uint8_t uart_tx_ring[UART_TX_RING_SIZE];
 static uint32_t uart_tx_head = 0u;
 static uint32_t uart_tx_tail = 0u;
+
+static void __not_in_flash_func(dma_irq_handler)(void) {
+    // Reprogram the channel that just finished while the other channel streams
+    uint ch_num = dma_pong_next ? DMACH_PONG : DMACH_PING;
+    dma_channel_hw_t *ch = &dma_hw->ch[ch_num];
+    dma_hw->intr = 1u << ch_num;
+    dma_pong_next = !dma_pong_next;
+
+    if (v_scanline >= MODE_V_FRONT_PORCH &&
+        v_scanline < (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH)) {
+        ch->read_addr = (uintptr_t)vblank_line_vsync_on;
+        ch->transfer_count = count_of(vblank_line_vsync_on);
+        v_scanline++;
+    } else if (v_scanline < (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH)) {
+        ch->read_addr = (uintptr_t)vblank_line_vsync_off;
+        ch->transfer_count = count_of(vblank_line_vsync_off);
+        v_scanline++;
+    } else if (!vactive_cmdlist_posted) {
+        ch->read_addr = (uintptr_t)vactive_line_prefix;
+        ch->transfer_count = count_of(vactive_line_prefix);
+        vactive_cmdlist_posted = true;
+    } else {
+        uint32_t active_y = v_scanline -
+            (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH);
+        ch->read_addr = (uintptr_t)framebuffer[active_y];
+        ch->transfer_count = FB_WORDS_PER_LINE;
+        vactive_cmdlist_posted = false;
+        if (++v_scanline >= MODE_V_TOTAL_LINES) {
+            v_scanline = 0u;
+        }
+    }
+}
+
+static void fb_draw_grid_and_border(void) {
+    // Draw a 1-pixel outer border (0,0)-(639,479) and a word-aligned 20x15 grid
+    // of 32x32-pixel cells. Each column aligns to bit 0 of a 32-bit word.
+    for (uint32_t y = 0u; y < MODE_V_ACTIVE_LINES; ++y) {
+        bool horiz_line = ((y & 31u) == 0u) || (y == (MODE_V_ACTIVE_LINES - 1u));
+        for (uint32_t w = 0u; w < FB_WORDS_PER_LINE; ++w) {
+            uint32_t word = horiz_line ? 0xFFFFFFFFu : 0x00000001u;
+            if (w == (FB_WORDS_PER_LINE - 1u)) {
+                word |= 0x80000000u;  // Rightmost 1 px border at x = 639
+            }
+            framebuffer[y][w] = word;
+        }
+    }
+}
+
+static void fb_xor_box(uint32_t x, uint32_t y) {
+    // XOR a 32x32 solid square at (x, y). Because width == 32 bits, each row
+    // touches at most two adjacent 32-bit framebuffer words.
+    uint32_t word_idx = x >> 5u;
+    uint32_t bit_shift = x & 31u;
+    uint32_t mask_lo = 0xFFFFFFFFu << bit_shift;
+    uint32_t mask_hi = (bit_shift != 0u) ? (0xFFFFFFFFu >> (32u - bit_shift)) : 0u;
+
+    for (uint32_t row = y; row < (y + BOX_SIZE_PX); ++row) {
+        framebuffer[row][word_idx] ^= mask_lo;
+        if (mask_hi != 0u) {
+            framebuffer[row][word_idx + 1u] ^= mask_hi;
+        }
+    }
+}
+
+static void dvi_hstx_init(void) {
+    // Source clk_hstx directly from clk_sys (126 MHz -> 252 Mbps DDR = 25.2 MHz pixel clock)
+    clock_configure(
+        clk_hstx,
+        0u,
+        CLOCKS_CLK_HSTX_CTRL_AUXSRC_VALUE_CLK_SYS,
+        SYS_CLOCK_HZ,
+        SYS_CLOCK_HZ
+    );
+
+    // Configure 1 bpp monochrome TMDS expansion (rp2350-datasheet.pdf §12.11.7, Table 1368):
+    //   Each lane right-rotates by 25 (moves bit 0 -> bit 7) with 1 valid bit (NBITS = 0),
+    //   mapping pixel 0 -> 0x00 (black) and pixel 1 -> 0x80 (bright gray/white) on R, G, B.
+    hstx_ctrl_hw->expand_tmds =
+        (0u  << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB) |
+        (25u << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB)   |
+        (0u  << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB) |
+        (25u << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB)   |
+        (0u  << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB) |
+        (25u << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB);
+
+    // Expander shifter (rp2350-datasheet.pdf §12.11.7, Table 1367):
+    //   ENC_N_SHIFTS = 0 means 32 shifts per 32-bit word (1 bit/pixel, LSB-first, ENC_SHIFT = 1).
+    //   RAW_N_SHIFTS = 1, RAW_SHIFT = 0 keeps 30-bit control words unshifted.
+    hstx_ctrl_hw->expand_shift =
+        (0u << HSTX_CTRL_EXPAND_SHIFT_ENC_N_SHIFTS_LSB) |
+        (1u << HSTX_CTRL_EXPAND_SHIFT_ENC_SHIFT_LSB)    |
+        (1u << HSTX_CTRL_EXPAND_SHIFT_RAW_N_SHIFTS_LSB) |
+        (0u << HSTX_CTRL_EXPAND_SHIFT_RAW_SHIFT_LSB);
+
+    // Output crossbar matching Adafruit DVI Sock pinout (see README.md):
+    //   GP12/13 (BIT0/1) = D0+/D0- (Lane 0: bits  0..9)
+    //   GP14/15 (BIT2/3) = CK+/CK- (Clock generator)
+    //   GP16/17 (BIT4/5) = D2+/D2- (Lane 2: bits 20..29)
+    //   GP18/19 (BIT6/7) = D1+/D1- (Lane 1: bits 10..19)
+    const uint32_t lane0 = (0u  << HSTX_CTRL_BIT0_SEL_P_LSB) | (1u  << HSTX_CTRL_BIT0_SEL_N_LSB);
+    const uint32_t lane1 = (10u << HSTX_CTRL_BIT0_SEL_P_LSB) | (11u << HSTX_CTRL_BIT0_SEL_N_LSB);
+    const uint32_t lane2 = (20u << HSTX_CTRL_BIT0_SEL_P_LSB) | (21u << HSTX_CTRL_BIT0_SEL_N_LSB);
+
+    hstx_ctrl_hw->bit[0] = lane0;
+    hstx_ctrl_hw->bit[1] = lane0 | HSTX_CTRL_BIT0_INV_BITS;
+    hstx_ctrl_hw->bit[2] = HSTX_CTRL_BIT0_CLK_BITS;
+    hstx_ctrl_hw->bit[3] = HSTX_CTRL_BIT0_CLK_BITS | HSTX_CTRL_BIT0_INV_BITS;
+    hstx_ctrl_hw->bit[4] = lane2;
+    hstx_ctrl_hw->bit[5] = lane2 | HSTX_CTRL_BIT0_INV_BITS;
+    hstx_ctrl_hw->bit[6] = lane1;
+    hstx_ctrl_hw->bit[7] = lane1 | HSTX_CTRL_BIT0_INV_BITS;
+
+    // Configure GP12-GP19 for HSTX (Function 0) with fast slew rate
+    for (uint pin = PIN_DVI_FIRST; pin < (PIN_DVI_FIRST + PIN_DVI_COUNT); ++pin) {
+        gpio_set_function(pin, GPIO_FUNC_HSTX);
+        gpio_set_slew_rate(pin, GPIO_SLEW_RATE_FAST);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_4MA);
+    }
+
+    // Enable HSTX: 5 DDR shifts of 2 bits = 10-bit TMDS symbols, clock period = 5 HSTX cycles
+    hstx_ctrl_hw->csr = 0u;
+    hstx_ctrl_hw->csr =
+        HSTX_CTRL_CSR_EXPAND_EN_BITS          |
+        (5u << HSTX_CTRL_CSR_CLKDIV_LSB)      |
+        (5u << HSTX_CTRL_CSR_N_SHIFTS_LSB)    |
+        (2u << HSTX_CTRL_CSR_SHIFT_LSB)       |
+        HSTX_CTRL_CSR_EN_BITS;
+
+    // Prioritize DMA on the AHB5 bus fabric so video streaming never stalls
+    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
+
+    // Configure ping-pong DMA channels paced by DREQ_HSTX
+    dma_channel_config cfg = dma_channel_get_default_config(DMACH_PING);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
+    channel_config_set_read_increment(&cfg, true);
+    channel_config_set_write_increment(&cfg, false);
+    channel_config_set_dreq(&cfg, DREQ_HSTX);
+    channel_config_set_chain_to(&cfg, DMACH_PONG);
+    dma_channel_configure(
+        DMACH_PING, &cfg,
+        &hstx_fifo_hw->fifo,
+        vblank_line_vsync_off,
+        count_of(vblank_line_vsync_off),
+        false
+    );
+
+    cfg = dma_channel_get_default_config(DMACH_PONG);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
+    channel_config_set_read_increment(&cfg, true);
+    channel_config_set_write_increment(&cfg, false);
+    channel_config_set_dreq(&cfg, DREQ_HSTX);
+    channel_config_set_chain_to(&cfg, DMACH_PING);
+    dma_channel_configure(
+        DMACH_PONG, &cfg,
+        &hstx_fifo_hw->fifo,
+        vblank_line_vsync_off,
+        count_of(vblank_line_vsync_off),
+        false
+    );
+
+    dma_hw->ints0 = (1u << DMACH_PING) | (1u << DMACH_PONG);
+    dma_hw->inte0 = (1u << DMACH_PING) | (1u << DMACH_PONG);
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
+    irq_set_enabled(DMA_IRQ_0, true);
+
+    dma_channel_start(DMACH_PING);
+}
 
 static void uart0_tx_enqueue_byte(uint8_t byte) {
     uint32_t next_head = (uart_tx_head + 1u) & UART_TX_RING_MASK;
@@ -149,8 +418,8 @@ static void uart0_rx_poll(void) {
 
 static void uart0_enqueue_boot_banner(void) {
     uart0_tx_enqueue_str("\r\n========================================\r\n");
-    uart0_tx_enqueue_str("Pico 2 Desert Island - Test Harness (1c)\r\n");
-    uart0_tx_enqueue_str("UART0: 115200 8N1 (GP0 TX, GP1 RX)\r\n");
+    uart0_tx_enqueue_str("Pico 2 Desert Island - Test Harness (1d)\r\n");
+    uart0_tx_enqueue_str("UART0: 115200 8N1 | DVI: 640x480@60 1bpp\r\n");
     uart0_tx_enqueue_str("========================================\r\n");
 }
 
@@ -198,9 +467,22 @@ static void piezo_set_active(bool on) {
 }
 
 int main(void) {
+    // Configure PLL_SYS to 126 MHz first so PWM, UART0, and HSTX derive from it
+    set_sys_clock_khz(SYS_CLOCK_KHZ, true);
+
     leds_init();
     piezo_init();
     uart0_init();
+
+    // Draw static 1 px border + 20x15 (32x32 px) grid and initial bouncing box
+    fb_draw_grid_and_border();
+    uint32_t box_x = 16u;
+    uint32_t box_y = 16u;
+    int32_t box_dx = 1;
+    int32_t box_dy = 1;
+    fb_xor_box(box_x, box_y);
+
+    dvi_hstx_init();
 
     // Queue boot banner for immediate non-blocking transmission
     uart0_enqueue_boot_banner();
@@ -222,6 +504,9 @@ int main(void) {
     // Schedule first serial heartbeat in 1 s
     uint32_t heartbeat_count = 0u;
     uint64_t next_heartbeat_us = now_us + HEARTBEAT_INTERVAL_US;
+
+    // Schedule bouncing XOR box animation (~60 px/s)
+    uint64_t next_video_step_us = now_us + VIDEO_STEP_INTERVAL_US;
 
     // Non-blocking cooperative polling loop
     while (true) {
@@ -257,5 +542,22 @@ int main(void) {
 
         // Drain software TX ring buffer into UART0 hardware TX FIFO
         uart0_tx_poll();
+
+        // Task 5: Glide 32x32 XOR box across the 20x15 grid and bounce off border
+        if (now_us >= next_video_step_us) {
+            fb_xor_box(box_x, box_y);
+
+            if ((box_dx > 0 && box_x >= BOX_MAX_X) || (box_dx < 0 && box_x <= BOX_MIN_X)) {
+                box_dx = -box_dx;
+            }
+            if ((box_dy > 0 && box_y >= BOX_MAX_Y) || (box_dy < 0 && box_y <= BOX_MIN_Y)) {
+                box_dy = -box_dy;
+            }
+            box_x = (uint32_t)((int32_t)box_x + box_dx);
+            box_y = (uint32_t)((int32_t)box_y + box_dy);
+
+            fb_xor_box(box_x, box_y);
+            next_video_step_us += VIDEO_STEP_INTERVAL_US;
+        }
     }
 }

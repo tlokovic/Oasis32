@@ -27,7 +27,7 @@ On startup, the test harness enters a **non-blocking cooperative polling loop** 
 * **Piezo:** Beep the piezo once every three seconds for a duration of **100 ms at 1 kHz** (started and stopped non-blockingly via timer comparison).
 * **Serial Heartbeat:** Print an incrementing timestamp/counter message to the debug serial port (`UART0`) once a second.
 * **Serial Echo:** Immediately echo incoming keystrokes from `UART0` back to the host terminal.
-* **HDMI Display:** Maintain a **640×480 monochrome (1 bpp) framebuffer** in SRAM (38,400 bytes). On every loop iteration, advance one pixel at a time (left-to-right, top-to-bottom) and flip that pixel's bit between off (`0`) and on (`1`) to generate continuous video activity.
+* **HDMI Display:** Maintain a **640×480 monochrome (1 bpp) framebuffer** in SRAM (38,400 bytes). Render a static 1-pixel outer border `(0,0)–(639,479)` and a word-aligned **20×15 grid of 32×32-pixel cells** to verify native 640×480 framing and bit order, plus a **32×32 XOR box** that glides at ~60 px/s and bounces off the border on a non-blocking timer.
 * **Keyboard/Mouse:** Poll the CH9350 bridge (`UART1`) for framed serial HID packets, decode incoming events, and log a human-readable summary to the debug serial port (`UART0`).
 * **SD Card:** Treat the SD card as a raw block device over SPI. Once a second, write a 512-byte test pattern to a rotating block address, read it back, verify data integrity, and log pass/fail status over `UART0`.
 
@@ -76,7 +76,7 @@ Solder the Adafruit DVI Sock (`GP12–GP19`).
 #### Software
 * Allocate the 640×480 1 bpp monochrome framebuffer (38,400 bytes).
 * Configure `PLL_SYS` / `CLK_HSTX`, the `HSTX` serializer/crossbar, and DMA channels to stream out 640×480 @ 60 Hz video.
-* In the non-blocking main loop, advance and toggle one pixel per loop iteration to produce a continuous visual pattern on the HDMI display without interrupting LED or UART tasks.
+* Render a static 1-pixel outer border `(0,0)–(639,479)` with a word-aligned `20×15` (`32×32` px) grid, and in the non-blocking main loop animate a `32×32` XOR box bouncing off the border (~60 px/s) without interrupting LED or UART tasks.
 
 ### Sub-Phase 1e: Solder Keyboard/Mouse Host (CH9350)
 
