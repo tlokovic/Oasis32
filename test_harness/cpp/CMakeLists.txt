@@ -10,6 +10,7 @@ add_executable(test_harness_cpp
 target_link_libraries(test_harness_cpp
     pico_stdlib
     hardware_pwm
+    hardware_uart
 )
 
 if (PICO_CYW43_SUPPORTED)

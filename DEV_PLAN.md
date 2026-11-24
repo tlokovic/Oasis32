@@ -66,7 +66,7 @@ Solder the CP2102N USB-to-UART bridge (`UART0`, `GP0` TX, `GP1` RX).
 * Initialize `UART0` at 115200 baud, 8N1.
 * Transmit a boot banner message upon startup.
 * Add the once-per-second status/heartbeat message to the main loop.
-* Poll `UART0` on every main loop iteration and immediately echo any received characters back to the host terminal.
+* Poll `UART0` on every main loop iteration and immediately echo any received characters back to the host terminal. Rather than printing the characters raw, it should print a separate line with "Serial character received:" with decimal, hex, and binary representations of the character.
 
 ### Sub-Phase 1d: Solder Display (DVI Sock)
 
