@@ -24,7 +24,7 @@ All development in Phase 1 lives in `test_harness/cpp/`.
 On startup, the test harness enters a **non-blocking cooperative polling loop** on a single RISC-V core (`rp2350-riscv`). Rather than using blocking delays (which would starve UART receive FIFOs or cause visual stutter), the loop continuously checks hardware timestamps alongside peripheral status registers to run the following tasks concurrently:
 
 * **LEDs:** Blink the Red, Green, and Blue LEDs sequentially, advancing once per second.
-* **Piezo:** Beep the piezo once every five seconds for a duration of **100 ms at 1 kHz** (started and stopped non-blockingly via timer comparison).
+* **Piezo:** Beep the piezo once every three seconds for a duration of **100 ms at 1 kHz** (started and stopped non-blockingly via timer comparison).
 * **Serial Heartbeat:** Print an incrementing timestamp/counter message to the debug serial port (`UART0`) once a second.
 * **Serial Echo:** Immediately echo incoming keystrokes from `UART0` back to the host terminal.
 * **HDMI Display:** Maintain a **640×480 monochrome (1 bpp) framebuffer** in SRAM (38,400 bytes). On every loop iteration, advance one pixel at a time (left-to-right, top-to-bottom) and flip that pixel's bit between off (`0`) and on (`1`) to generate continuous video activity.
