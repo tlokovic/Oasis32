@@ -1,5 +1,5 @@
 /**
- * Pico 2 Desert Island Computer - Phase 1 Hardware Test Harness (Sub-Phase 1d)
+ * Pico 2 Desert Island Computer - Phase 1 Hardware Test Harness (Sub-Phase 1e)
  *
  * Non-blocking cooperative polling loop verifying:
  *   - Status LEDs: Red (GP26) -> Green (GP27) -> Blue (GP28), advancing every 1 s
@@ -13,9 +13,13 @@
  *       * 1 bpp monochrome framebuffer in SRAM (38,400 bytes)
  *       * Ping-pong DMA paced by DREQ_HSTX with hardware TMDS encoding
  *       * Static 1 px border + 20x15 (32x32 px) grid + bouncing 32x32 XOR box
+ *   - Keyboard/Mouse Host (CH9350): UART1 (GP20 TX, GP21 RX) at 115200 8N1
+ *       * Non-blocking 0x57 0xAB frame parser (State 2 keyboard, relative mouse,
+ *         status/version/disconnect frames) logged to UART0
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "hardware/clocks.h"
@@ -34,6 +38,8 @@
 #define PIN_UART0_RX     1u   // UART0 RX (rp2350-datasheet.pdf §9.4, Table 677)
 #define PIN_DVI_FIRST   12u   // GP12-GP19: HSTX (Function 0, Table 677)
 #define PIN_DVI_COUNT    8u
+#define PIN_UART1_TX    20u   // UART1 TX -> CH9350 RX (rp2350-datasheet.pdf §9.4, Table 677)
+#define PIN_UART1_RX    21u   // UART1 RX <- CH9350 TX (rp2350-datasheet.pdf §9.4, Table 677)
 #define PIN_PIEZO       22u   // PWM3 A   (rp2350-datasheet.pdf §12.5.2, Table 1183)
 #define PIN_LED_RED     26u
 #define PIN_LED_GREEN   27u
@@ -50,8 +56,15 @@
 // Debug UART0 configuration (PL011, rp2350-datasheet.pdf §12.1)
 #define UART_DEBUG              uart0
 #define UART_DEBUG_BAUD         115200u
-#define UART_TX_RING_SIZE       512u   // Power of 2 for cheap bitmask wrap
+#define UART_TX_RING_SIZE       1024u  // Power of 2 for cheap bitmask wrap
 #define UART_TX_RING_MASK       (UART_TX_RING_SIZE - 1u)
+
+// CH9350 HID Bridge UART1 configuration (CH9350DS.PDF §7.2.1, p. 8)
+#define UART_HID                uart1
+#define UART_HID_BAUD           115200u
+#define CH9350_SYNC1            0x57u
+#define CH9350_SYNC2            0xABu
+#define CH9350_MAX_PAYLOAD      8u
 
 // Scheduling intervals (microseconds, driven by 64-bit 1 MHz system timer)
 #define LED_STEP_INTERVAL_US     1000000ull  // 1 s
@@ -366,6 +379,15 @@ static void uart0_tx_enqueue_u32_dec(uint32_t value) {
     }
 }
 
+static void uart0_tx_enqueue_i32_dec(int32_t value) {
+    if (value < 0) {
+        uart0_tx_enqueue_byte('-');
+        uart0_tx_enqueue_u32_dec((uint32_t)(-(int64_t)value));
+    } else {
+        uart0_tx_enqueue_u32_dec((uint32_t)value);
+    }
+}
+
 static void uart0_tx_enqueue_u8_hex(uint8_t value) {
     static const char HEX_DIGITS[16] = "0123456789ABCDEF";
     uart0_tx_enqueue_byte((uint8_t)HEX_DIGITS[(value >> 4u) & 0x0Fu]);
@@ -418,9 +440,288 @@ static void uart0_rx_poll(void) {
 
 static void uart0_enqueue_boot_banner(void) {
     uart0_tx_enqueue_str("\r\n========================================\r\n");
-    uart0_tx_enqueue_str("Pico 2 Desert Island - Test Harness (1d)\r\n");
-    uart0_tx_enqueue_str("UART0: 115200 8N1 | DVI: 640x480@60 1bpp\r\n");
+    uart0_tx_enqueue_str("Pico 2 Desert Island - Test Harness (1e)\r\n");
+    uart0_tx_enqueue_str("UART0: 115200 | DVI: 640x480 | CH9350: UART1\r\n");
     uart0_tx_enqueue_str("========================================\r\n");
+}
+
+// ---------------------------------------------------------------------------
+// CH9350 USB HID-to-UART Bridge (UART1, State 2, CH9350DS.PDF §7.2.4, pp. 10-12)
+// ---------------------------------------------------------------------------
+
+typedef enum {
+    CH9350_STATE_WAIT_SYNC1 = 0,
+    CH9350_STATE_WAIT_SYNC2,
+    CH9350_STATE_WAIT_CMD,
+    CH9350_STATE_READ_PAYLOAD,
+} ch9350_parse_state_t;
+
+static ch9350_parse_state_t ch9350_state = CH9350_STATE_WAIT_SYNC1;
+static uint8_t ch9350_cmd = 0u;
+static uint8_t ch9350_payload[CH9350_MAX_PAYLOAD];
+static uint8_t ch9350_payload_len = 0u;
+static uint8_t ch9350_payload_idx = 0u;
+
+static void ch9350_uart1_init(void) {
+    uart_init(UART_HID, UART_HID_BAUD);
+
+    // Route GP20 -> UART1 TX and GP21 -> UART1 RX (Function 2)
+    gpio_set_function(PIN_UART1_TX, GPIO_FUNC_UART);
+    gpio_set_function(PIN_UART1_RX, GPIO_FUNC_UART);
+    // Keep RX idling high while CH9350 boots or if disconnected
+    gpio_pull_up(PIN_UART1_RX);
+
+    // 8N1, no hardware flow control, 32-byte FIFOs enabled
+    uart_set_hw_flow(UART_HID, false, false);
+    uart_set_format(UART_HID, 8u, 1u, UART_PARITY_NONE);
+    uart_set_fifo_enabled(UART_HID, true);
+}
+
+static const char *hid_keycode_name(uint8_t code) {
+    static const char *const LETTERS[26] = {
+        "A","B","C","D","E","F","G","H","I","J","K","L","M",
+        "N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
+    };
+    static const char *const DIGITS[10] = {
+        "1","2","3","4","5","6","7","8","9","0"
+    };
+
+    if (code >= 0x04u && code <= 0x1Du) {
+        return LETTERS[code - 0x04u];
+    }
+    if (code >= 0x1Eu && code <= 0x27u) {
+        return DIGITS[code - 0x1Eu];
+    }
+    switch (code) {
+        case 0x28u: return "Enter";
+        case 0x29u: return "Esc";
+        case 0x2Au: return "Bksp";
+        case 0x2Bu: return "Tab";
+        case 0x2Cu: return "Space";
+        case 0x2Du: return "-";
+        case 0x2Eu: return "=";
+        case 0x2Fu: return "[";
+        case 0x30u: return "]";
+        case 0x31u: return "\\";
+        case 0x33u: return ";";
+        case 0x34u: return "'";
+        case 0x35u: return "`";
+        case 0x36u: return ",";
+        case 0x37u: return ".";
+        case 0x38u: return "/";
+        case 0x39u: return "CapsLock";
+        case 0x4Fu: return "Right";
+        case 0x50u: return "Left";
+        case 0x51u: return "Down";
+        case 0x52u: return "Up";
+        default:    return NULL;
+    }
+}
+
+static void ch9350_log_modifiers(uint8_t mod) {
+    static const char *const MOD_NAMES[8] = {
+        "LCtrl", "LShift", "LAlt", "LGUI",
+        "RCtrl", "RShift", "RAlt", "RGUI"
+    };
+    if (mod == 0u) {
+        return;
+    }
+    uart0_tx_enqueue_byte('(');
+    bool first = true;
+    for (uint i = 0u; i < 8u; ++i) {
+        if ((mod & (1u << i)) != 0u) {
+            if (!first) {
+                uart0_tx_enqueue_byte('+');
+            }
+            uart0_tx_enqueue_str(MOD_NAMES[i]);
+            first = false;
+        }
+    }
+    uart0_tx_enqueue_byte(')');
+}
+
+static void ch9350_log_mouse_buttons(uint8_t btn) {
+    if (btn == 0u) {
+        return;
+    }
+    uart0_tx_enqueue_byte('(');
+    bool first = true;
+    if ((btn & 0x01u) != 0u) {
+        uart0_tx_enqueue_byte('L');
+        first = false;
+    }
+    if ((btn & 0x02u) != 0u) {
+        if (!first) { uart0_tx_enqueue_byte('+'); }
+        uart0_tx_enqueue_byte('R');
+        first = false;
+    }
+    if ((btn & 0x04u) != 0u) {
+        if (!first) { uart0_tx_enqueue_byte('+'); }
+        uart0_tx_enqueue_byte('M');
+    }
+    uart0_tx_enqueue_byte(')');
+}
+
+static void ch9350_dispatch_frame(uint8_t cmd, const uint8_t *data) {
+    switch (cmd) {
+        case 0x01u: {
+            // State 2/3/4 Keyboard Report (8 bytes: Mod, 0x00, Key1..Key6)
+            uint8_t mod = data[0];
+            uart0_tx_enqueue_str("[CH9350] KBD: mod=0x");
+            uart0_tx_enqueue_u8_hex(mod);
+            ch9350_log_modifiers(mod);
+            uart0_tx_enqueue_str(" keys=[");
+            bool any_key = false;
+            for (uint i = 2u; i < 8u; ++i) {
+                uint8_t k = data[i];
+                if (k == 0u) {
+                    continue;
+                }
+                if (any_key) {
+                    uart0_tx_enqueue_str(", ");
+                }
+                uart0_tx_enqueue_str("0x");
+                uart0_tx_enqueue_u8_hex(k);
+                const char *name = hid_keycode_name(k);
+                if (name != NULL) {
+                    uart0_tx_enqueue_byte('(');
+                    uart0_tx_enqueue_str(name);
+                    uart0_tx_enqueue_byte(')');
+                }
+                any_key = true;
+            }
+            if (!any_key) {
+                uart0_tx_enqueue_str("none");
+            }
+            uart0_tx_enqueue_str("]\r\n");
+            break;
+        }
+        case 0x02u: {
+            // State 2 Relative Mouse Report (4 bytes: Buttons, dX, dY, Wheel)
+            uint8_t btn = data[0];
+            int8_t dx = (int8_t)data[1];
+            int8_t dy = (int8_t)data[2];
+            int8_t wheel = (int8_t)data[3];
+            uart0_tx_enqueue_str("[CH9350] MOUSE: btn=0x");
+            uart0_tx_enqueue_u8_hex(btn);
+            ch9350_log_mouse_buttons(btn);
+            uart0_tx_enqueue_str(" dx=");
+            uart0_tx_enqueue_i32_dec(dx);
+            uart0_tx_enqueue_str(" dy=");
+            uart0_tx_enqueue_i32_dec(dy);
+            uart0_tx_enqueue_str(" wheel=");
+            uart0_tx_enqueue_i32_dec(wheel);
+            uart0_tx_enqueue_str("\r\n");
+            break;
+        }
+        case 0x04u: {
+            // State 3/4 Absolute Mouse Report (7 bytes: ID, Btn, X_lo, X_hi, Y_lo, Y_hi, Wheel)
+            uint8_t btn = data[1];
+            uint32_t ax = (uint32_t)data[2] | ((uint32_t)data[3] << 8u);
+            uint32_t ay = (uint32_t)data[4] | ((uint32_t)data[5] << 8u);
+            int8_t wheel = (int8_t)data[6];
+            uart0_tx_enqueue_str("[CH9350] ABS_MOUSE: btn=0x");
+            uart0_tx_enqueue_u8_hex(btn);
+            ch9350_log_mouse_buttons(btn);
+            uart0_tx_enqueue_str(" x=");
+            uart0_tx_enqueue_u32_dec(ax);
+            uart0_tx_enqueue_str(" y=");
+            uart0_tx_enqueue_u32_dec(ay);
+            uart0_tx_enqueue_str(" wheel=");
+            uart0_tx_enqueue_i32_dec(wheel);
+            uart0_tx_enqueue_str("\r\n");
+            break;
+        }
+        case 0x80u:
+            // State 2/3/4 Status Change / LED sync query (CH9350DS.PDF §7.2.4.8, p. 12):
+            // 1-byte payload already consumed by the parser; ignore silently.
+            break;
+        case 0x82u:
+            // State 0/1 Status Request Frame (CH9350DS.PDF §7.2.4.2, p. 10)
+            uart0_tx_enqueue_str("[CH9350] STATUS_REQ (State 0/1): val=0x");
+            uart0_tx_enqueue_u8_hex(data[0]);
+            uart0_tx_enqueue_str("\r\n");
+            break;
+        case 0x84u:
+            // State 1 Reset Delay Command (CH9350DS.PDF §7.2.4.4, p. 12)
+            uart0_tx_enqueue_str("[CH9350] RESET_DELAY (0x84)\r\n");
+            break;
+        case 0x85u:
+            // State 0/1 Working Status Change (CH9350DS.PDF §7.2.4.5, p. 12)
+            uart0_tx_enqueue_str("[CH9350] MODE_CHANGE: state=0x");
+            uart0_tx_enqueue_u8_hex(data[0]);
+            uart0_tx_enqueue_str("\r\n");
+            break;
+        case 0x86u:
+            // Device Disconnect Command (CH9350DS.PDF §7.2.4.6, p. 12)
+            uart0_tx_enqueue_str("[CH9350] DEVICE_DISCONNECT (0x86)\r\n");
+            break;
+        case 0x87u:
+            // Obtain Version Number Command (CH9350DS.PDF §7.2.4.7, p. 12)
+            uart0_tx_enqueue_str("[CH9350] VERSION_QUERY (0x87)\r\n");
+            break;
+        default:
+            uart0_tx_enqueue_str("[CH9350] UNKNOWN cmd=0x");
+            uart0_tx_enqueue_u8_hex(cmd);
+            uart0_tx_enqueue_str("\r\n");
+            break;
+    }
+}
+
+static void ch9350_rx_poll(void) {
+    while (uart_is_readable(UART_HID)) {
+        uint8_t b = (uint8_t)uart_getc(UART_HID);
+
+        switch (ch9350_state) {
+            case CH9350_STATE_WAIT_SYNC1:
+                if (b == CH9350_SYNC1) {
+                    ch9350_state = CH9350_STATE_WAIT_SYNC2;
+                }
+                break;
+
+            case CH9350_STATE_WAIT_SYNC2:
+                if (b == CH9350_SYNC2) {
+                    ch9350_state = CH9350_STATE_WAIT_CMD;
+                } else if (b != CH9350_SYNC1) {
+                    ch9350_state = CH9350_STATE_WAIT_SYNC1;
+                }
+                break;
+
+            case CH9350_STATE_WAIT_CMD:
+                ch9350_cmd = b;
+                ch9350_payload_idx = 0u;
+                switch (b) {
+                    case 0x01u: ch9350_payload_len = 8u; break;
+                    case 0x02u: ch9350_payload_len = 4u; break;
+                    case 0x04u: ch9350_payload_len = 7u; break;
+                    case 0x80u:
+                    case 0x82u:
+                    case 0x85u: ch9350_payload_len = 1u; break;
+                    case 0x84u:
+                    case 0x86u:
+                    case 0x87u: ch9350_payload_len = 0u; break;
+                    default:
+                        ch9350_dispatch_frame(b, ch9350_payload);
+                        ch9350_state = CH9350_STATE_WAIT_SYNC1;
+                        continue;
+                }
+                if (ch9350_payload_len == 0u) {
+                    ch9350_dispatch_frame(ch9350_cmd, ch9350_payload);
+                    ch9350_state = CH9350_STATE_WAIT_SYNC1;
+                } else {
+                    ch9350_state = CH9350_STATE_READ_PAYLOAD;
+                }
+                break;
+
+            case CH9350_STATE_READ_PAYLOAD:
+                ch9350_payload[ch9350_payload_idx++] = b;
+                if (ch9350_payload_idx >= ch9350_payload_len) {
+                    ch9350_dispatch_frame(ch9350_cmd, ch9350_payload);
+                    ch9350_state = CH9350_STATE_WAIT_SYNC1;
+                }
+                break;
+        }
+    }
 }
 
 static void uart0_enqueue_heartbeat(uint32_t counter, uint32_t uptime_s) {
@@ -473,6 +774,7 @@ int main(void) {
     leds_init();
     piezo_init();
     uart0_init();
+    ch9350_uart1_init();
 
     // Draw static 1 px border + 20x15 (32x32 px) grid and initial bouncing box
     fb_draw_grid_and_border();
@@ -540,10 +842,13 @@ int main(void) {
         // Task 4: Poll UART0 RX and echo received characters (dec/hex/bin)
         uart0_rx_poll();
 
+        // Task 5: Poll UART1 (CH9350) for framed 0x57 0xAB HID packets
+        ch9350_rx_poll();
+
         // Drain software TX ring buffer into UART0 hardware TX FIFO
         uart0_tx_poll();
 
-        // Task 5: Glide 32x32 XOR box across the 20x15 grid and bounce off border
+        // Task 6: Glide 32x32 XOR box across the 20x15 grid and bounce off border
         if (now_us >= next_video_step_us) {
             fb_xor_box(box_x, box_y);
 
