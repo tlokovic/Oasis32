@@ -1,4 +1,4 @@
-# Oasis32 — System Architecture
+# Oasis32 — Boot Behavior
 
 ## 1. Philosophy: A "Boot from Removable Disk" Computer
 
