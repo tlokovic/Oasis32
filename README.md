@@ -5,16 +5,14 @@
 
 ## Overview
 
-**Oasis32** is a 32-bit "fantasy retro" computer that combines the simple hardware interfaces
-of 80's computers with modern affordances so that it's actually fun to program.
+**Oasis32** is a physical 32-bit "fantasy retro" computer built around a Raspberry Pi Pico 2. It is an experiment in radical simplicity: a machine small and transparent enough for a single programmer to understand completely, from the bare metal up, while still being genuinely fun to program.
 
-From retro computers, we get simple memory-mapped hardware that does not require third-party drivers, libraries, or SDKs. We also get a complete Programmers Reference Manual that fully
-describes the behaviors and interfaces of the system for programmers.
+Modern computers are too complex and too layered to own end-to-end; real 1980s computers were wonderfully comprehensible, but cramped by 8-bit instruction sets, composite video, and floppy disks. **Oasis32** bridges the two worlds:
 
-From the modern age, we get the RISC-V instruction set, HDMI, SD Card removable storage, USB keyboard/mouse, and USB serial for talking to modern computers. The system has 520KB of
-RAM, most of which is available to user code.
+* **From 1980s microcomputers:** A "boot from removable disk" design with no built-in OS, a compact permanent System ROM (BIOS), direct memory-mapped video, and a self-contained Programmer's Reference Manual—with **zero third-party drivers, libraries, or SDKs**.
+* **From the modern era:** A clean 32-bit **RISC-V** instruction set, **640×480 HDMI** output, **USB keyboard and mouse**, **SD card** removable storage, **USB-C serial** for host-PC iteration, and **520 KB of SRAM** (nearly all of it directly usable by user code).
 
-The result is a well-documented foundation that can be programmed from the ground up with zero third-party code. The goal is *not* to converge on existing standards such as C, Posix, UNIX, and FAT32, but rather to develop an "alternate history" tech stack that relies as little as possible on outside standards or libraries.
+The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FAT32. Instead, Oasis32 is a clean-slate foundation for building an **"alternate history" software stack** from scratch—OS, filesystem, tools, and applications—relying as little as possible on outside standards, with the long-term aspiration of becoming a self-hosted machine that can be programmed entirely on its own.
 
 ## Features
 
