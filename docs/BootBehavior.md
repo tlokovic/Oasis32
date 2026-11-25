@@ -67,27 +67,60 @@ Our permanent, bare-metal RISC-V assembly firmware stored in QSPI Flash and exec
    * Initialize core peripherals: DVI/HSTX video output, `UART0` (debug serial), `UART1` (CH9350 keyboard/mouse), `SPI0` (SD card), `PWM` (piezo buzzer), `TIMER0`, and status LEDs.
 2. **Resident BIOS / HAL Services:**
    * Keep low-level hardware-access routines permanently resident in XIP Flash so that SD-loaded software does not need to re-implement drivers for the display, keyboard/mouse, SD block I/O, serial port, timer, buzzer, or LEDs.
-3. **SD Bootloader (Chainloader):**
-   * Detect an inserted SD card (`GP6`), perform the SPI initialization handshake, read and validate the **Boot Image Header**, copy the **Boot Payload** from the SD card into SRAM, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
+3. **Interactive Boot Menu, SD Bootloader & Serial Loader:**
+   * Present an interactive boot menu (initially over `UART0`; later in DVI text mode) allowing the user to boot from an SD card (`ENTER`), boot a Base64-encoded disk image streamed directly into SRAM over `UART0` (`1`), or write a Base64-encoded disk image received over `UART0` to an SD card (`2`).
+   * Detect an inserted SD card (`GP6`), perform the SPI initialization handshake, read and validate the packed 16-byte `"OA32"` **Boot Image Header**, copy the **Boot Payload** into User SRAM, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
 
 ### 3.3 Stable ROM ABI (Application Binary Interface)
 Because software on SD cards is assembled and linked independently of the System ROM, it must be able to call resident BIOS routines without breaking if the System ROM is ever updated or bug-fixed. A **Stable ROM ABI** decouples callers from internal ROM addresses using a fixed contract (such as a fixed-address Jump Table or a RISC-V `ecall` trap dispatcher—see [Open Questions](#6-open-questions)).
 
-### 3.4 Boot Sector / Boot Image Header (SD Card)
-Bootable SD cards carry a small, structured **Boot Image Header** at a well-known block location (typically **LBA 0**, the first 512-byte sector). Conceptually, this header describes how the bootloader should load and launch the disk:
+### 3.4 Bootable Disk Image Format
+Oasis32 uses a single, uniform binary **Disk Image Format** both when stored raw on an SD card (starting at **LBA 0**) and when transmitted over the serial port (`UART0`) in standard **Base64** encoding.
 
-* **Magic Number / Signature:** Identifies the SD card as a valid Oasis32 boot disk (preventing the bootloader from executing unformatted or non-bootable cards).
-* **Header Version / Flags:** Allows future format extensions while maintaining backward compatibility.
-* **Load Address:** Target address in SRAM (`0x2000_0000`–`0x2007_FFFF`) where the payload will be copied (or a fixed conventional load address).
-* **Payload Size:** Number of bytes or 512-byte sectors to read from subsequent LBAs on the SD card.
-* **Entry Point:** The SRAM address to which the bootloader transfers execution after loading completes.
-* **Checksum / CRC *(optional)*:** Verifies payload integrity before transferring control.
+The image begins with a **packed 16-byte little-endian Boot Image Header**, followed immediately by the raw payload bytes at offset `0x10` (`16`):
 
-### 3.5 Bootable Disk Images / Stage-2 Payloads
+| Offset | Size | Field | Encoding / Description |
+|:---:|:---:|:---|:---|
+| `0x00` | 4 bytes | `magic` | 4 ASCII bytes `"OA32"` (`0x4F, 0x41, 0x33, 0x32` in byte order; `0x3233414F` as a little-endian 32-bit word). Identifies a valid Oasis32 disk image. |
+| `0x04` | 4 bytes | `load_addr` | 32-bit little-endian SRAM address where payload byte 0 is copied (must lie within User SRAM). |
+| `0x08` | 4 bytes | `entry_addr` | 32-bit little-endian SRAM address to jump to when booting (must lie within User SRAM). |
+| `0x0C` | 4 bytes | `payload_size` | 32-bit little-endian payload length in bytes (total disk image size minus the 16-byte header). `load_addr + payload_size` must lie within User SRAM. |
+| `0x10` | `payload_size` bytes | `payload` | Raw Stage-2 payload bytes. On SD cards, the first up to 496 bytes share LBA 0 with the header, and subsequent bytes continue contiguously across LBA 1, LBA 2, etc. (trailing bytes in the final 512-byte sector are zero-padded when written). |
+
+### 3.5 Startup Boot Menu & Serial Transfer Workflow
+Because text-mode font rendering on DVI is not yet implemented in the initial System ROM, the startup boot menu operates over the debug serial port (`UART0`, 115,200 baud 8N1). Once DVI text-mode rendering is added later, the same menu workflow will transition to the DVI display.
+
+On power-up or reset, after completing hardware initialization (POST), the System ROM prints a splash message followed by the boot menu:
+
+```text
+ - ENTER to boot from SD Card
+ - 1 to boot from disk image read from serial
+ - 2 to write disk image read from serial
+```
+
+#### Menu Options
+* **`ENTER` — Boot from SD Card:**
+  * Checks SD card presence via `GP6` (`CD`). If no card is inserted, prints `"Insert boot disk"` and waits until a card is inserted.
+  * Initializes the SD card over `SPI0`, reads LBA 0, and validates the 16-byte `"OA32"` header (`magic`, `load_addr`, `entry_addr`, and `payload_size` bounds within User SRAM).
+  * Copies the payload bytes (starting at byte offset `16` of LBA 0, then continuing across LBA 1..N) to `load_addr`, executes `fence.i`, and jumps to `entry_addr`.
+* **`1` — Boot from Disk Image Read from Serial (RAM-Only):**
+  * Reads a Base64-encoded disk image from `UART0` (ignoring whitespace/newlines, decoding the 16-byte header first to learn `payload_size`, and stopping automatically once all `16 + payload_size` decoded bytes have been received).
+  * Validates the header, copies the payload directly into `load_addr` in User SRAM **without writing to the SD card**, executes `fence.i`, and jumps to `entry_addr`.
+  * Supports rapid host-to-target edit-assemble-test iteration with zero SD card swapping or wear.
+* **`2` — Write Disk Image Read from Serial to SD Card:**
+  * Checks SD card presence via `GP6` (`CD`). If no card is inserted, prints `"Insert disk to write"` and waits until a card is inserted.
+  * Reads and decodes the Base64-encoded disk image from `UART0` into a **User SRAM staging buffer first**, validates the 16-byte `"OA32"` header, and only then writes the raw image (header + payload, zero-padding the tail of the final 512-byte sector) to the SD card starting at LBA 0.
+  * *Why buffer in SRAM first?* `UART0` has no hardware flow control (`CTS`/`RTS`) and only a 32-byte RX FIFO, whereas an SD card flash write (`CMD24`) can stall for 10–250 ms. Buffering the complete decoded image in User SRAM before touching the SD card completely eliminates UART FIFO overrun risk for all bootable images that fit in User SRAM.
+  * Once the write completes, returns to the boot menu (or equivalently resets).
+
+#### Validation & Error Recovery
+If any boot or transfer path encounters an error—such as an invalid `"OA32"` magic number, a `load_addr`/`entry_addr`/`payload_size` outside User SRAM, malformed Base64 input, or an SD I/O failure—the System ROM prints a descriptive error message and returns to the boot menu.
+
+### 3.6 Bootable Disk Images / Stage-2 Payloads
 Any software written to an SD card—ranging from tiny standalone graphics demos and games to a full operating system kernel, filesystem, and interactive shell.
 
-* **SRAM Execution:** Payloads are linked to execute from SRAM (`0x2000_0000`–`0x2007_FFFF`). Because the bootloader writes the payload's machine code into SRAM via data stores before jumping to it, the bootloader executes RISC-V's `fence.i` instruction prior to transfer so the instruction fetch pipeline observes the newly written instructions.
-* **Development Workflow:** To run new software on the computer, you assemble/link a payload targeting SRAM on a host machine, prepend the Boot Image Header to produce a disk image, write it to an SD card, insert the card into the Pico 2, and press Reset.
+* **SRAM Execution:** Payloads are linked to execute from User SRAM (`0x2000_0000`–`0x2007_FFFF`, excluding the BIOS-reserved region). Because the bootloader writes the payload's machine code into SRAM via data stores before jumping to it, the bootloader executes RISC-V's `fence.i` instruction prior to transfer so the instruction fetch pipeline observes the newly written instructions.
+* **Development Workflow:** To run new software on the computer, assemble and link a payload targeting User SRAM on a host machine, prepend the 16-byte `"OA32"` Boot Image Header, Base64-encode the resulting image, and send it over `UART0`—using menu option `1` for instant RAM-only testing or menu option `2` to write a persistent boot disk onto an SD card.
 
 ---
 
@@ -158,27 +191,10 @@ A shared CMake helper module enforces the architectural boundary mechanically:
 
 ## 6. Open Questions
 
-The following architectural decisions are intentionally deferred and will be resolved during System ROM design:
+The following architectural decision is intentionally deferred and will be resolved next during System ROM design:
 
-1. **No-Card / Invalid-Disk Fallback Behavior:**
-   What should the System ROM do on power-up or reset if no SD card is inserted, or if the inserted card does not contain a valid Boot Image Header?
-   * *Option A:* Display a status screen/prompt (e.g., `"Insert Boot Disk"`) on DVI and `UART0` and poll until a valid card is inserted.
-   * *Option B:* Drop into a minimal built-in ROM Monitor (over `UART0` and/or DVI) for diagnostics, memory inspection, or manual boot retry.
-   * *Option C:* A combination of both (e.g., prompt for a boot disk with a keypress option to enter a minimal ROM monitor).
-
-2. **Resident BIOS Calling Mechanism (ROM ABI):**
+1. **Resident BIOS Calling Mechanism (ROM ABI):**
    How should SRAM-loaded payloads invoke the resident BIOS routines in XIP Flash?
    * *Option A — Fixed Jump Table (Vector Table):* A table of jump instructions at a fixed, well-known flash address (similar to the Commodore 64 KERNAL or CP/M BIOS). Simple, zero trap overhead, and direct `jal` calls.
    * *Option B — `ecall` Trap / Syscall Interface:* Callers place a service ID in a register and execute RISC-V `ecall`, trapping into a single ROM dispatcher (similar to PC BIOS `INT` services or RISC-V SBI). Cleanly supports privilege separation later if desired, with slightly more dispatch overhead.
-
-3. **Host-to-SD-Card Workflow During Cross-Development:**
-   Until the computer's own OS is mature enough for self-hosted development ("true desert island" mode), software will be cross-assembled on Windows and written to SD cards that do **not** use FAT32 (since designing a custom filesystem is part of the project). How should assembled images be transferred onto raw SD cards?
-   * *Option A — Raw Block Imaging on Windows (Card Reader):* Assemble the payload and prepend the Boot Image Header into a flat `.img` file on Windows, then write raw sectors directly to the SD card via an elevated imaging tool or script (targeting `\\.\PhysicalDriveN`, e.g., `dd` for Windows, Win32DiskImager, or a custom Python/PowerShell script). Fast for large images and requires zero extra BIOS code, at the cost of physically swapping cards, needing Administrator privileges, guarding against targeting the wrong drive, and dismissing Windows "format disk" prompts.
-     * *Refinement (MBR Wrapper):* Optionally placing a minimal MBR partition table at LBA 0 (marking our custom region with a non-Windows partition type) can prevent Windows from nagging to format the card while still leaving the filesystem 100% custom.
-   * *Option B — Serial Disk-Writer Mode in BIOS over `UART0` (CP2102N):* Boot Oasis32 into a special BIOS transfer mode (our own "BOOTSEL over serial") that receives data over the `UART0` debug port and writes it directly to the SD card—eliminating physical card swapping altogether. Framing choices include:
-     * *ASCII Text Encoding (Base64, Intel HEX, or Motorola S-Record):* Requires no custom host sender—encoded output (e.g., from `objcopy -O ihex` or a Base64 encoder) can be pasted or piped straight into a terminal like PuTTY. Intel HEX/S-Record also provide built-in per-line checksums.
-     * *Standard Serial Protocol (XMODEM / YMODEM):* Packetized binary transfer with built-in CRCs and retransmission, natively supported by common serial terminals (e.g., Tera Term) and simple host scripts.
-     * *Custom Framed Binary Protocol + Host Script:* A small Windows script (e.g., Python `pyserial`) sends length-prefixed, CRC-checked blocks directly from the build step—fastest over UART (especially if `UART0` is run above 115,200 baud).
-   * *Option C — Hybrid Serial "Load-to-SRAM + Optional Commit-to-SD":* An extension of Option B where the BIOS serial loader can stream a program straight into SRAM and run it immediately for rapid edit-assemble-test cycles (with zero SD card wear), and only write the image to the SD card when ready to make a persistent boot disk.
-   * *Option D — Minimal BIOS RAM-Loader + On-Demand Disk-Writer Utility:* Keep the flash-resident BIOS as small as possible by including only a tiny serial-to-SRAM loader (no SD-write logic in flash); when you want to populate an SD card, first push a standalone disk-writer utility into SRAM over `UART0`, then use it to write the target disk image to the SD card.
 

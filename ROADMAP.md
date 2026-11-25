@@ -127,7 +127,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * **Single Source of Truth:** Shared constants use pure `#define` headers (`.h`) consumed by both `.S` sources and preprocessed `.ld.S` linker script templates via a shared `cmake/oasis32.cmake` helper.
 
 ### Sub-Phase 3a: Architectural Decisions & Representational Foundation
-* Resolve the open System ROM design decisions in `docs/BootBehavior.md §6` (ROM ABI calling mechanism, LBA 0 Boot Image Header binary layout, no-card/invalid-disk fallback behavior, and host-to-SD-card development transfer workflow).
+* Finalize the remaining open System ROM design decision in `docs/BootBehavior.md §6` (Resident BIOS Calling Mechanism: Jump Table vs. `ecall`). *(Boot menu flow, packed 16-byte `"OA32"` disk image format, and Base64 `UART0` serial loader/writer workflow are resolved in `docs/BootBehavior.md §3.4–3.5`.)*
 * Create `cmake/oasis32.cmake` with the `oasis32_abi` interface target, `.ld.S` preprocessing helper (using `gcc -E -P -x c` with `DEPFILE` tracking), and bare-metal disk target helper.
 * Author the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
 * Author the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
@@ -138,13 +138,13 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
   * Status LEDs (`SIO`), piezo buzzer (`PWM`), debug serial (`UART0`), DVI/HSTX display + DMA IRQ, CH9350 keyboard/mouse (`UART1`), and SD card block I/O (`SPI0` + `GP6` card detect).
 * Confine all BIOS-private buffers, DMA descriptors, and driver state cleanly to the BIOS-reserved SRAM region defined in `memory_map.h` and `bios_ram.h`.
 
-### Sub-Phase 3c: Stable Resident BIOS ABI & Fallback Behavior
+### Sub-Phase 3c: Stable Resident BIOS ABI & Interactive Boot Menu / Serial Loader
 * Implement the Stage-1 Resident BIOS ABI dispatcher (`bios/src/abi_dispatch.S`) exposing hardware I/O services (display/framebuffer, serial, keyboard/mouse, SD block read/write, timer, buzzer, LEDs) to SRAM-loaded payloads.
-* Implement the chosen no-card / invalid-disk fallback behavior (e.g., boot prompt, minimal ROM monitor, and/or serial loader over `UART0`).
+* Implement the interactive startup boot menu over `UART0` (splash + `ENTER` SD boot, `1` Base64 serial-to-SRAM boot, `2` Base64 serial-to-SD disk writer buffered in User SRAM), including `"Insert boot disk"` / `"Insert disk to write"` card-detect waits and error recovery back to the boot menu.
 
 ### Sub-Phase 3d: SD Bootloader & End-to-End Boot Verification
-* Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the LBA 0 Boot Image Header, load payload sectors into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
-* Verify the complete boot chain with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
+* Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the packed 16-byte `"OA32"` Boot Image Header at LBA 0, load payload bytes (starting at offset `16` of LBA 0 across subsequent sectors) into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
+* Verify the complete boot chain (via both serial-to-RAM boot and serial-to-SD write + SD boot) with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
 
 ### Phase 3 Deliverable: Oasis32 Programmer's Reference (`docs/ProgrammersReference.md`)
 Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep with `include/abi/`, this manual serves as the authoritative, self-contained specification for programming Oasis32 (in the spirit of the *Commodore 64 Programmer's Reference Guide*).
@@ -156,10 +156,10 @@ Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep w
 * **Required Specification Chapters:**
   1. **Machine Model & Execution Rules:** 32-bit little-endian RISC-V, exact declared ISA string, nominal 126 MHz clock, single-core execution model, and explicit prohibition on direct MMIO, privileged CSR, or reserved-memory access.
   2. **Memory Map Contract:** User SRAM window (`USER_RAM_BASE`–`USER_RAM_END`), initial 16-byte-aligned stack top (`USER_STACK_TOP`), reserved/off-limits zones, and usage of `include/abi/memory_map.h` and `include/ld/sd_payload.ld.S`.
-  3. **Bootable Disk Format & Startup State:** Exact LBA 0 Boot Image Header binary layout, guaranteed CPU/peripheral state upon jumping to the payload entry point, and clean exit/reboot semantics.
+  3. **Bootable Disk Format & Startup State:** Exact packed 16-byte `"OA32"` Boot Image Header binary layout, guaranteed CPU/peripheral state upon jumping to the payload entry point, and clean exit/reboot semantics.
   4. **BIOS ABI & Calling Contract:** Invocation mechanism (Jump Table or `ecall`), `ILP32` register preservation rules, and standard return/error codes.
   5. **Resident BIOS Services Reference:** Complete input/output, blocking/non-blocking, and error specifications for Display/Framebuffer (base, `640×480` 1 bpp geometry, `80`-byte stride, exact bit-to-pixel ordering, VSYNC/frame counter), Keyboard/Mouse polling & report formats, SD 512-byte LBA block read/write & capacity, Debug Serial Console, monotonic µs System Time, Piezo Audio tone control, 3-bit Status LEDs, and System Control (version, reboot).
-  6. **Self-Contained Appendices:** Compact 1-page USB HID Keyboard (`Usage Page 0x07`) scan code & modifier table (avoiding the external USB HID Usage Tables PDF), ASCII table, public `include/abi/*.h` quick reference, and built-in ROM fallback/monitor usage (if applicable).
+  6. **Self-Contained Appendices:** Compact 1-page USB HID Keyboard (`Usage Page 0x07`) scan code & modifier table (avoiding the external USB HID Usage Tables PDF), ASCII table, public `include/abi/*.h` quick reference, and built-in startup boot menu & Base64 serial loader usage.
 
 ---
 
