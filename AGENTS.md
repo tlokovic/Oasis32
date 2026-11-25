@@ -2,10 +2,10 @@
 
 ## Fundamental References:
 * Project Description: `README.md`
+* Development Plan & Active Phase: `ROADMAP.md`
 * Hardware details: `docs/hardware.md`
-* Software Architecture: `docs/Architecture.md`
-* Development Plan & Active Phase: `docs/Roadmap.md`
-* At the start of each session or phase, verify the current phase requirements and constraints in `docs/Roadmap.md`.
+* Boot Behavior: `docs/Boot Behavior.md`
+* At the start of each session or phase, verify the current phase requirements and constraints in `ROADMAP.md`.
 
 ## Primary Goal: Educational & Mentorship Approach
 * The primary objective is for the user to understand the system and hardware design as completely as possible.

@@ -18,6 +18,13 @@ The result is a well-documented foundation that can be programmed from the groun
 
 ## Documentation
 
-*  For hardware details, see [Hardware](docs/hardware.md).
-*  For software architecture details, see [Hardware](docs/hardware.md).
-*  For roadmap and status, see [Roadmap](docs/roadmap.md).
+*  For hardware details, see [Hardware](docs/Hardware.md).
+*  For boot behavior, see [Boot Behavior](docs/Boot Behavior.md).
+
+## Development Status
+
+Hardware has been designed, built, and tested with both
+[C++](test_harness/cpp) and [RISC-V Assembly](test_harness/asm) test
+harnesses. BIOS and ABI design are in progress.
+
+For more detailed roadmap and status, see [Roadmap](ROADMAP.md).
