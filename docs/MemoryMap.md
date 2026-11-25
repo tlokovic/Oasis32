@@ -14,8 +14,7 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 | `0x0000_0000`–`0x0000_7FFF` | 32 KB | Silicon Boot ROM | Private | Stage-0 mask ROM (`BOOTSEL` / `PICOBIN` loader). | `rp2350-datasheet.pdf §2.2.1, p. 26` |
 | `0x1000_0000`–`0x103F_FFFF` | 4 MB* | XIP Cached Flash | Private | Stage-1 System ROM / BIOS (Execute-In-Place). | `rp2350-datasheet.pdf §2.2.2, p. 26` |
 | `0x2000_0000`–`0x2007_3FFF` | 464 KB | Main SRAM (Banks 0–7) | **Public** | Contiguous **User SRAM** (Stage-2 code, data, stack). | `rp2350-datasheet.pdf §4.2, p. 312` |
-| `0x2007_4000`–`0x2007_F0BF` | ~44.2 KB | Main SRAM (Bank 7) | **Public** | Shared **Video Buffers** (`FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`). | `rp2350-datasheet.pdf §4.2, p. 312` |
-| `0x2007_F0C0`–`0x2007_FFFF` | ~3.8 KB | Main SRAM (Bank 7) | Reserved | **Future Video / Sprite Reserve** (keeps all video memory contiguous). | `rp2350-datasheet.pdf §4.2, p. 312` |
+| `0x2007_4000`–`0x2007_FFFF` | 48 KB | Main SRAM (Bank 7) | **Public** | **Video Memory** (`FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`, `VIDEO_CTRL`, `SPRITE_OAM`, `SPRITE_PAT`). | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x2008_0000`–`0x2008_0FFF` | 4 KB | Scratchpad Bank 8 | Private | **Core 0 BIOS IRQ stack** (`mscratch`) & boot stack. | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x2008_1000`–`0x2008_1FFF` | 4 KB | Scratchpad Bank 9 | Private | **Core 1 Video Coprocessor** ping-pong lines & stack. | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x4000_0000`–`0x4016_FFFF` | 1.5 MB | APB Peripherals | Private | `CLOCKS`, `RESETS`, `IO`/`PADS`, `UART0/1`, `SPI0`, `PWM`, `TIMER0`. | `rp2350-datasheet.pdf §2.2.4, p. 28` |
@@ -32,21 +31,21 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 ```text
 0x2008_2000 ┌──────────────────────────────────────────────────────────────┐
             │ Scratchpad Bank 9 (4 KB, non-striped) — BIOS PRIVATE         │
-            │   0x2008_1200–0x2008_1FFF  Core 1 Stack (sp = 0x2008_2000 ↓) │
+            │   0x2008_1300–0x2008_1FFF  Core 1 Stack (sp = 0x2008_2000 ↓) │
+            │   0x2008_1200–0x2008_12FF  Latched OAM copy (256 B)          │
             │   0x2008_10A0–0x2008_11FF  HSTX DMA cmd lists & Core 1 state │
             │   0x2008_1000–0x2008_109F  Ping-Pong Scanlines (2 × 80 B)    │
 0x2008_1000 ├──────────────────────────────────────────────────────────────┤
             │ Scratchpad Bank 8 (4 KB, non-striped) — BIOS PRIVATE         │
             │   0x2008_0000–0x2008_0FFF  Core 0 IRQ Stack (mscratch ↓)     │
 0x2008_0000 ╞══════════════════════════════════════════════════════════════╡
-            │ Future Video / Sprite Reserve (3,904 B) — RESERVED           │
-            │   0x2007_F0C0–0x2007_FFFF  Reserved for future Sprite RAM    │
-            │                            + OAM (0 bytes taken from User)   │
-0x2007_F0C0 ├──────────────────────────────────────────────────────────────┤
-            │ Shared Video Buffers (45,248 B) — PUBLIC ABI                 │
-            │   0x2007_DE00–0x2007_F0BF  TEXT_BUF  (80×60 = 4,800 B)       │
-            │   0x2007_D600–0x2007_DDFF  FONT_RAM  (256×8 = 2,048 B)       │
-            │   0x2007_4000–0x2007_D5FF  FRAMEBUF  (640×480 1bpp = 38,400 B│
+            │ Public Video Memory Block (48 KB = 49,152 B) — PUBLIC ABI    │
+            │   0x2007_F200–0x2007_FFFF  SPRITE_PAT (56×64 B = 3,584 B)    │
+            │   0x2007_F100–0x2007_F1FF  SPRITE_OAM (32×8 B = 256 B)       │
+            │   0x2007_F0C0–0x2007_F0FF  VIDEO_CTRL (64 B)                 │
+            │   0x2007_DE00–0x2007_F0BF  TEXT_BUF   (80×60 = 4,800 B)      │
+            │   0x2007_D600–0x2007_DDFF  FONT_RAM   (256×8 = 2,048 B)      │
+            │   0x2007_4000–0x2007_D5FF  FRAMEBUF   (640×480 1bpp = 38.4KB)│
 0x2007_4000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_STACK_TOP
             │                                                              │
             │  User SRAM — PUBLIC ABI (464 KB = 475,136 bytes = 0x74000)   │
@@ -68,6 +67,9 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 | `VIDEO_FRAMEBUF_BASE` | `0x2007_4000` | `0x2007_D5FF` | `38,400` | `0x0000_9600` | 4 KB | `640×480` 1 bpp monochrome framebuffer (`80` bytes/scanline). |
 | `VIDEO_FONT_RAM_BASE` | `0x2007_D600` | `0x2007_DDFF` | `2,048` | `0x0000_0800` | 512 B | `256` glyphs × `8` bytes, glyph-major (`FONT_RAM[ch * 8 + row]`), glyph `0x00` empty. |
 | `VIDEO_TEXT_BUF_BASE` | `0x2007_DE00` | `0x2007_F0BF` | `4,800` | `0x0000_12C0` | 512 B | `80×60` character overlay grid (`row * 80 + col`), OR-composited onto `FRAMEBUF`. |
+| `VIDEO_CTRL_BASE` | `0x2007_F0C0` | `0x2007_F0FF` | `64` | `0x0000_0040` | 64 B | Public video control/status block (`LATCH_OAM`, future scroll/cursor fields). |
+| `VIDEO_SPRITE_OAM_BASE` | `0x2007_F100` | `0x2007_F1FF` | `256` | `0x0000_0100` | 256 B | `32` simultaneous on-screen sprite slots (`8` B each; Sprite 0 conventionally mouse cursor). |
+| `VIDEO_SPRITE_PAT_BASE` | `0x2007_F200` | `0x2007_FFFF` | `3,584` | `0x0000_0E00` | 512 B | `56` masked `16×16` 2-plane sprite patterns (`64` B each: 32 B pixels + 32 B mask). |
 
 * **Why `FONT_RAM` precedes `TEXT_BUF`:** Placing `FONT_RAM` (`0x0800`) immediately after `FRAMEBUF` (`0x9600`) keeps all three public video buffers aligned on clean **512-byte** (or 4 KB) boundaries with zero interior padding.
 * **Bootloader Bounds Check:** Both SD boot (`ENTER`) and serial boot (`1`) validate that `load_addr >= USER_RAM_BASE`, `entry_addr >= USER_RAM_BASE`, `entry_addr < USER_RAM_END`, and `load_addr + payload_size <= USER_RAM_END` (checking for 32-bit wrap-around) before copying any payload bytes.
@@ -102,7 +104,8 @@ Unlike Main SRAM Banks 0–7 (which are 4-way word-striped across AHB masters), 
 | **Bank 8** | `0x2008_0000`–`0x2008_0FFF` | 4,096 B | **Core 0 BIOS IRQ Stack (`mscratch` = `0x2008_1000` ↓).** Also serves as Core 0's boot/menu stack prior to transferring control to a Stage-2 payload. |
 | **Bank 9** | `0x2008_1000`–`0x2008_109F` | 160 B | **Core 1 Ping-Pong Scanline Buffers:** Buffer A (`0x2008_1000`–`0x2008_104F`, 80 B) and Buffer B (`0x2008_1050`–`0x2008_109F`, 80 B). |
 | **Bank 9** | `0x2008_10A0`–`0x2008_11FF` | 352 B | **Core 1 HSTX DMA Command Lists** (vertical/horizontal blanking & sync command words) and Core 1 local driver state. |
-| **Bank 9** | `0x2008_1200`–`0x2008_1FFF` | 3,584 B | **Core 1 Video Coprocessor Stack (`sp` = `0x2008_2000` ↓).** |
+| **Bank 9** | `0x2008_1200`–`0x2008_12FF` | 256 B | **Core 1 Latched OAM Copy:** Frame-latched mirror of `SPRITE_OAM` copied during VBLANK when `VIDEO_CTRL.LATCH_OAM = 1`. |
+| **Bank 9** | `0x2008_1300`–`0x2008_1FFF` | 3,328 B | **Core 1 Video Coprocessor Stack (`sp` = `0x2008_2000` ↓).** |
 
 ---
 
@@ -113,8 +116,8 @@ Unlike a 6502 (where hardware forces IRQs onto the single `$0100–$01FF` stack)
 | Stack | Initial `sp` (Top) | Floor | Size | Typical Usage | Overflow Behavior (↓) | Underflow Behavior (↑) |
 |:---|:---|:---|---:|:---|:---|:---|
 | **Core 0 User Stack** *(also used by `ecall`)* | `0x2007_4000` | Dynamic (above payload `.bss`/heap) | Up to **464 KB** (shared with program) | A few KB–tens of KB (plus ~64–128 B during `ecall`) | **Silent corruption** of user `.bss`/heap/code (bus fault only if wrapping below `0x2000_0000`). | **Silent corruption** of `FRAMEBUF` (`0x2007_4000`+), visible as stray pixels at top-left of screen. |
-| **Core 0 BIOS IRQ & Boot Stack** *(held in `mscratch`)* | `0x2008_1000` | `0x2008_0000` | **4,096 B** (4 KB) | < 128 B in non-nested IRQs; ~256–512 B during boot menu | **Silent corruption** into the Future Video / Sprite Reserve (`0x2007_FFFF` ↓, never touching BIOS state in USB DPRAM). | **Silent corruption** into Bank 9 (`0x2008_1000`+), clobbering Core 1's ping-pong scanline buffers. |
-| **Core 1 Video Coprocessor Stack** | `0x2008_2000` | `0x2008_1200` | **3,584 B** (3.5 KB) | < 128 B (flat, non-recursive scanline loop) | **Silent corruption** into Core 1 HSTX DMA command lists (`0x2008_10A0`–`0x2008_11FF`) and ping-pong line buffers, glitching video. | **Hardware bus fault!** `0x2008_2000` is unmapped AHB space above SRAM → Load/Store Access Fault (`mcause = 5/7`, `riscv-privileged.pdf §3.1.12, p. 53`). |
+| **Core 0 BIOS IRQ & Boot Stack** *(held in `mscratch`)* | `0x2008_1000` | `0x2008_0000` | **4,096 B** (4 KB) | < 128 B in non-nested IRQs; ~256–512 B during boot menu | **Silent corruption** into the top of `SPRITE_PAT` (`0x2007_FFFF` ↓, never touching BIOS state in USB DPRAM). | **Silent corruption** into Bank 9 (`0x2008_1000`+), clobbering Core 1's ping-pong scanline buffers. |
+| **Core 1 Video Coprocessor Stack** | `0x2008_2000` | `0x2008_1300` | **3,328 B** (3.25 KB) | < 128 B (flat, non-recursive scanline loop) | **Silent corruption** into Core 1's latched OAM copy (`0x2008_1200`–`0x2008_12FF`), HSTX command lists, and ping-pong buffers, glitching video. | **Hardware bus fault!** `0x2008_2000` is unmapped AHB space above SRAM → Load/Store Access Fault (`mcause = 5/7`, `riscv-privileged.pdf §3.1.12, p. 53`). |
 
 ### Design Rationale & Fault Detection
 * **Why three stacks?**
@@ -140,6 +143,6 @@ The Stage-1 System ROM executes directly from external QSPI Flash via the 16 KB 
 ## 5. Memory Ownership & Striping Summary
 
 * **Total On-Chip RAM Used:** `524 KB` (`536,576` B) = `512 KB` Main SRAM + `8 KB` Scratchpad SRAM + `4 KB` USB DPRAM.
-* **Main SRAM (512 KB — 100% User-Facing):** `464 KB` User SRAM + `44.19 KB` Video Buffers + `3.81 KB` Future Video / Sprite Reserve (zero BIOS-private data in Main SRAM).
+* **Main SRAM (512 KB — 100% Public / User-Facing):** `464 KB` contiguous User SRAM + `48 KB` Public Video Memory (`FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`, `VIDEO_CTRL`, `SPRITE_OAM`, `SPRITE_PAT`). Zero BIOS-private data lives in Main SRAM.
 * **Strictly BIOS-Private (`12 KB` total):** `8 KB` Scratchpad SRAM (Banks 8–9 stacks & Core 1 scanline buffers) + `4 KB` USB DPRAM (`0x5010_0000`–`0x5010_0FFF`, all BIOS driver state & buffers).
 * **Single Source of Truth:** All public constants live in `include/abi/memory_map.h` (consumed by both `bios/` and `disks/` via preprocessed `.ld.S` scripts); all private offsets live in `bios/internal/bios_ram.h` and `bios/internal/bios_flash.h`.

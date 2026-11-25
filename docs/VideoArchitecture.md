@@ -12,16 +12,19 @@ Classic 8-bit microcomputers (like the Commodore 64's VIC-II or the Atari 800's 
 
 ## 2. Video Memory Regions
 
-The BIOS exposes three contiguous memory regions in SRAM (exact base addresses defined in `include/abi/memory_map.h`):
+The BIOS exposes one contiguous **48 KB** public video memory block at the top of Main SRAM (`0x2007_4000`–`0x2007_FFFF`; exact symbolic constants defined in `include/abi/memory_map.h`):
 
-| Region | Geometry | Size | Layout & Role |
-|:---|:---|:---:|:---|
-| **`FRAMEBUF`** | `640×480` @ 1 bpp | 38,400 bytes | Monochrome pixel framebuffer (`80` bytes per scanline × `480` scanlines). |
-| **`TEXT_BUF`** | `80×60` cells | 4,800 bytes | Character grid: 1 byte per `8×8`-pixel cell (`row * 80 + col`), indexing glyphs `0x00`–`0xFF` in `FONT_RAM`. |
-| **`FONT_RAM`** | `256` glyphs × `8` bytes | 2,048 bytes | Programmable `8×8` character set in **glyph-major layout**: `FONT_RAM[char * 8 + row]`, where `row` `0` is the top pixel row and `7` is the bottom pixel row. |
+| Region | Address Range | Geometry | Size | Layout & Role |
+|:---|:---|:---|---:|:---|
+| **`FRAMEBUF`** | `0x2007_4000`–`0x2007_D5FF` | `640×480` @ 1 bpp | 38,400 B | Monochrome pixel framebuffer (`80` bytes per scanline × `480` scanlines). |
+| **`FONT_RAM`** | `0x2007_D600`–`0x2007_DDFF` | `256` glyphs × `8` B | 2,048 B | Programmable `8×8` character set in **glyph-major layout** (`FONT_RAM[char * 8 + row]`, row `0` = top, row `7` = bottom). |
+| **`TEXT_BUF`** | `0x2007_DE00`–`0x2007_F0BF` | `80×60` cells | 4,800 B | Character grid: 1 byte per `8×8`-pixel cell (`row * 80 + col`), indexing glyphs `0x00`–`0xFF` in `FONT_RAM`. |
+| **`VIDEO_CTRL`** | `0x2007_F0C0`–`0x2007_F0FF` | Control/status block | 64 B | Public video control registers (e.g., `LATCH_OAM` mode bit, future scroll/cursor flags). |
+| **`SPRITE_OAM`** | `0x2007_F100`–`0x2007_F1FF` | `32` slots × `8` B | 256 B | Active on-screen sprite descriptor table (Sprite 0 conventionally used as the mouse cursor). |
+| **`SPRITE_PAT`** | `0x2007_F200`–`0x2007_FFFF` | `56` patterns × `64` B | 3,584 B | Masked `16×16` 2-plane sprite pattern bank (supports multiple animation frames and shared patterns). |
 
-* **Total Video Footprint:** `38,400 + 4,800 + 2,048 = 45,248` bytes (~44.2 KB out of 512 KB Main SRAM).
-* **Default Boot Font & Custom Tiles:** On power-up, the BIOS initializes `FONT_RAM` from a default 8×8 font stored in Flash, with **glyph `0x00` defined as all zeros (empty/transparent)**. Because `FONT_RAM` lives in SRAM, Stage-2 software can overwrite any glyph at runtime to create custom symbols, box-drawing characters, or 8×8 graphic tiles.
+* **Total Video Footprint:** `38,400 + 2,048 + 4,800 + 64 + 256 + 3,584 = 49,152` bytes (**exactly 48 KB**, leaving 464 KB of contiguous User SRAM).
+* **Default Boot Font & Custom Tiles:** On power-up, the BIOS initializes `FONT_RAM` from a default 8×8 font stored in Flash, with **glyph `0x00` defined as all zeros (empty/transparent)**, and zeroes `SPRITE_OAM` so all sprites start disabled. Because `FONT_RAM` lives in SRAM, Stage-2 software can overwrite any glyph at runtime to create custom symbols, box-drawing characters, or 8×8 graphic tiles.
 
 ---
 
@@ -78,28 +81,45 @@ This single rule naturally covers every display use case without any mode-switch
 
 ---
 
-## 5. Future Work: Sprites
+## 5. Hardware Sprite Engine (`SPRITE_OAM` & `SPRITE_PAT`)
 
-Because Core 1 uses less than ~20% of its `4,000`-cycle scanline budget for `FRAMEBUF | FONT_RAM[TEXT_BUF]` compositing, the Video Coprocessor has ample RAM and timing headroom to add **hardware-style sprites and a floating mouse cursor** in a future revision—without taking a single byte from the 464 KB User SRAM.
+Core 1's scanline compositor includes a **32-sprite masked `16×16` hardware sprite engine** backed by **56 reusable sprite patterns**—enabling smooth animation cycling, game sprites, and a floating hardware mouse cursor (by convention, **Sprite 0**) with zero per-scanline drop-out or flicker.
 
-### RAM Headroom (Zero Impact on User SRAM)
-Because BIOS-private driver state lives in the RP2350's unused 4 KB USB DPRAM (`0x5010_0000`–`0x5010_0FFF`, see [MemoryMap.md](MemoryMap.md)), the top **`3,904` bytes** of Main SRAM (`0x2007_F0C0`–`0x2007_FFFF`)—immediately above `TEXT_BUF`—are reserved exclusively for future video features, keeping all public video memory (framebuffer, font, text, and sprites) in one contiguous `0x2007_4000`–`0x2007_FFFF` block without touching the 464 KB User SRAM.
+### 5.1 Sprite Pattern Format (`SPRITE_PAT`: `0x2007_F200`–`0x2007_FFFF`)
+Each of the **56** `16×16` patterns occupies **64 bytes** in a **split-plane 2-plane monochrome** layout:
+* **Bytes `0..31` (Pixel Plane):** `16` rows × `uint16_t` (row `0` = top, row `15` = bottom; bit order matches `FRAMEBUF`/`FONT_RAM`).
+* **Bytes `32..63` (Mask Plane):** `16` rows × `uint16_t` (`1` = opaque, `0` = transparent).
 
-A classic **32-sprite masked `16×16` engine** (with Sprite 0 acting as a hardware mouse cursor) fits comfortably in **`2,304` bytes** of that `3,904`-byte reserve (leaving `1,600` bytes for alignment and further video expansion):
-* **Sprite Pattern RAM (`2,048` bytes):** `32` distinct `16×16` masked sprites (`2` bytes/row × `16` rows × `2` planes [pixels + transparency mask] = `64` bytes/sprite), enabling crisp opaque white-with-black-outline cursors and game sprites over any background. *(Or 64 unmasked OR/XOR sprites.)*
-* **OAM / Sprite Attribute Table (`256` bytes):** `32` simultaneous sprite slots × `8` bytes each:
-  * Packed 32-bit `[y:16 | x:16]` (signed coordinates for smooth off-screen clipping, updatable atomically in a single `sw` instruction)
-  * `tile_id` (1 byte), `flags` (1 byte: enable, masked/OR/XOR mode, H/V flip, layer priority relative to `TEXT_BUF`), and `2` reserved bytes.
+This gives every pixel **3 states**—**Transparent** (`mask = 0`), **Opaque Black** (`mask = 1, pixel = 0`), or **Opaque White** (`mask = 1, pixel = 1`)—so a white mouse arrow can carry a crisp 1-pixel black outline over both black and white backgrounds.
 
-### Core 1 Scanline Timing Budget
-With ~`740` cycles/line spent on baseline compositing and DMA bookkeeping, Core 1 has ~`3,260` free cycles per scanline:
-1. **OAM Scanline Hit-Test (all 32 slots):** `32 × ~6` cycles ≈ **`192` cycles** (using unsigned `(y - sprite.y) < 16` to test both vertical bounds at once).
-2. **Per-Active-Sprite Compositing:** A 16-pixel sprite at arbitrary pixel `x` spans at most 3 bytes (`byte_col = x >> 3`, `shift = x & 7`) and composites directly into the Bank 9 line buffer via `line = (line & ~(mask << shift)) | (pixels << shift)` in **~25–35 cycles**.
-3. **Worst Case (all 32 sprites overlapping on the same scanline):**
-   $$740 + 192 + (32 \times 35) = 2{,}052\text{ cycles out of } 4{,}000\text{ (\~51\% of Core 1)}$$
-   This yields 32 simultaneous masked `16×16` sprites with **zero per-scanline drop-out or flicker** while leaving nearly half of Core 1 idle.
+### 5.2 OAM Slot Format (`SPRITE_OAM`: `0x2007_F100`–`0x2007_F1FF`)
+Each of the **32** simultaneous on-screen sprite slots occupies **8 bytes** (little-endian):
 
-### Frame-Latched vs. Dynamic (Beam-Racing) Updates
-A single control flag in the Video Control block (`LATCH_OAM`) can support both styles:
-* **Frame-Latched (default):** During VBLANK (~`180,000` idle cycles across 45 blanking lines), Core 1 copies the 256-byte OAM table into its private Bank 9 scratchpad (~130 cycles), guaranteeing tear-free frames and zero bus contention during active scanlines.
-* **Dynamic / Live Per-Scanline:** Core 1 reads OAM live on each scanline, enabling classic C64/Amiga raster tricks (sprite multiplexing for 100+ on-screen sprites, mid-screen splits) while still allowing atomic `(x, y)` updates via a single 32-bit word store.
+| Offset | Size | Field | Description |
+|:---:|:---:|:---|:---|
+| `+0` | 2 B | `x` (`int16_t`) | Signed horizontal position (`-15`..`639`) for smooth off-screen clipping on left/right edges. |
+| `+2` | 2 B | `y` (`int16_t`) | Signed vertical position (`-15`..`479`) for smooth off-screen clipping on top/bottom edges. *(`x` and `y` share one 32-bit word `[y:16 \| x:16]`, enabling atomic position updates with a single `sw`.)* |
+| `+4` | 1 B | `pattern` (`uint8_t`) | Pattern index (`0`–`55`) into `SPRITE_PAT` (out-of-range indices are skipped; multiple slots may share one pattern). |
+| `+5` | 1 B | `flags` (`uint8_t`) | Bit `0`: `ENABLE` (`1` = visible)<br>Bit `1`: `HFLIP` (horizontal mirror)<br>Bit `2`: `VFLIP` (vertical mirror)<br>Bit `3`: `BEHIND_TEXT` (`0` = above `TEXT_BUF`, `1` = between `FRAMEBUF` and `TEXT_BUF`)<br>Bits `5:4`: `BLEND` (`00` = Masked Opaque `(bg & ~mask) \| pixels`, `01` = OR `bg \| pixels`, `10` = XOR `bg ^ pixels`, `11` = reserved)<br>Bits `7:6`: reserved (`0`) |
+| `+6` | 2 B | `reserved` | Reserved (`0`). |
+
+### 5.3 Compositing Priority & Mouse Cursor Convention
+Core 1 composites each active scanline into the Bank 9 line buffer in four deterministic layers:
+1. **`FRAMEBUF`** (bottom layer)
+2. **Behind-text sprites** (`BEHIND_TEXT = 1`), drawn **Slot 31 → Slot 0**
+3. **`TEXT_BUF` / `FONT_RAM`** (OR-composited on top)
+4. **In-front sprites** (`BEHIND_TEXT = 0`), drawn **Slot 31 → Slot 0**
+
+Because **lower OAM index = higher visual priority**, **Sprite 0** (used by convention as the mouse cursor, with `BEHIND_TEXT = 0`) automatically floats above all graphics, all text, and all other sprites with zero special-case logic.
+
+### 5.4 `VIDEO_CTRL` Latching & Scanline Timing Budget
+* **`VIDEO_CTRL` (`0x2007_F0C0`) `LATCH_OAM` flag:**
+  * **`1` (default — Frame-Latched):** During VBLANK (~`180,000` idle cycles across 45 blanking lines), Core 1 copies `SPRITE_OAM` (256 B, ~130 cycles) into its private Bank 9 scratchpad, guaranteeing tear-free frames and zero AHB contention during active scanlines.
+  * **`0` (Dynamic / Beam-Racing):** Core 1 reads `SPRITE_OAM` live per scanline, unlocking classic raster sprite-multiplexing tricks while preserving atomic `(x, y)` updates via a single 32-bit store.
+* **Scanline Timing Budget:**
+  1. Baseline `FRAMEBUF | FONT_RAM[TEXT_BUF]` + DMA bookkeeping: **~`740` cycles**.
+  2. OAM hit-test across all 32 slots (`(uint32_t)(y - sprite.y) < 16`): `32 × ~6` ≈ **`192` cycles**.
+  3. Per-active-sprite compositing (a 16-pixel sprite spans at most 3 bytes, fitting in one 32-bit shift): **~`25–35` cycles**.
+  4. **Worst Case (all 32 sprites overlapping on one scanline):**
+     $$740 + 192 + (32 \times 35) = 2{,}052\text{ cycles out of } 4{,}000\text{ (\~51\% of Core 1)}$$
+     Zero per-scanline sprite limit or flicker, with nearly half of Core 1 still idle.

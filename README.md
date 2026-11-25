@@ -19,6 +19,7 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
 * **640×480 @ 60 Hz Monochrome HDMI Display (Dedicated Video Coprocessor):**
   * RP2350 Core 1 acts as a permanent, hidden **Video Coprocessor (PPU/CRTC)** driving HSTX DVI output with **0% video overhead** on the main CPU.
   * **Unified Graphics + Text Overlay (No Mode Switching):** Combines a `640×480` 1 bpp monochrome framebuffer (`38.4 KB`) with an `80×60` character text buffer (`4.8 KB`) and a **user-modifiable 256-glyph `8×8` font in RAM** (`2 KB`), composited live on every scanline via bitwise `OR`. Zeroing the text buffer yields pure graphics; zeroing the framebuffer yields pure 80×60 text; using both gives a non-destructive text overlay.
+  * **Hardware Sprite Engine:** **32 simultaneous masked `16×16` sprites** backed by **56 animation/tile patterns** in video RAM (with Sprite 0 conventionally serving as a floating hardware mouse cursor), supporting transparency masks, H/V flip, above/below-text layering, and frame-latched or dynamic raster updates with zero per-scanline flicker.
 * **Permanent System ROM (BIOS) & Stable `ecall` Syscall ABI:**
   * Flash-resident BIOS isolates hardware details behind clean RISC-V `ecall` syscalls, giving disk-loaded software simple, address-independent access to:
     * **USB Keyboard & Mouse** (handled in silicon via a CH9350 HID-to-UART bridge—no software USB stack required)
