@@ -146,7 +146,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the LBA 0 Boot Image Header, load payload sectors into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
 * Verify the complete boot chain with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
 
-### Phase 3 Deliverable: Oasis32 Programmer's Reference (`docs/Programmers Reference.md`)
+### Phase 3 Deliverable: Oasis32 Programmer's Reference (`docs/ProgrammersReference.md`)
 Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep with `include/abi/`, this manual serves as the authoritative, self-contained specification for programming Oasis32 (in the spirit of the *Commodore 64 Programmer's Reference Guide*).
 
 * **Core Boundary Principle:** Defines everything an Oasis32 programmer needs—and is allowed—to know. The underlying RP2350, Pico 2, Hazard3, CH9350, CP2102N, and SD SPI hardware are treated strictly as hidden implementation details. The manual must **never** reference overly permissive vendor hardware datasheets or "slice" the RP2350 datasheet; if a raw RP2350 register ever needs to be mentioned, that signals a missing or leaking BIOS abstraction.
