@@ -20,6 +20,7 @@ The result is a well-documented foundation that can be programmed from the groun
 
 *  For hardware details, see [Hardware](docs/Hardware.md).
 *  For boot behavior, see [Booting Behavior](docs/BootBehavior.md).
+*  For execution, interrupt, and `ecall` ABI design, see [Execution Model](docs/ExecutionModel.md).
 
 ## Development Status
 

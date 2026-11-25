@@ -72,7 +72,7 @@ Our permanent, bare-metal RISC-V assembly firmware stored in QSPI Flash and exec
    * Detect an inserted SD card (`GP6`), perform the SPI initialization handshake, read and validate the packed 16-byte `"OA32"` **Boot Image Header**, copy the **Boot Payload** into User SRAM, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
 
 ### 3.3 Stable ROM ABI (Application Binary Interface)
-Because software on SD cards is assembled and linked independently of the System ROM, it must be able to call resident BIOS routines without breaking if the System ROM is ever updated or bug-fixed. A **Stable ROM ABI** decouples callers from internal ROM addresses using a fixed contract (such as a fixed-address Jump Table or a RISC-V `ecall` trap dispatcher—see [Open Questions](#6-open-questions)).
+Because software on SD cards is assembled and linked independently of the System ROM, it must be able to call resident BIOS routines without breaking if the System ROM is ever updated or bug-fixed. Oasis32 decouples callers from Flash addresses using a RISC-V **`ecall` trap dispatcher** (`a7` service ID, `a0–a5` arguments, `a0` return value). For the complete privilege, interrupt, and `ecall` runtime contract, see [ExecutionModel.md](ExecutionModel.md).
 
 ### 3.4 Bootable Disk Image Format
 Oasis32 uses a single, uniform binary **Disk Image Format** both when stored raw on an SD card (starting at **LBA 0**) and when transmitted over the serial port (`UART0`) in standard **Base64** encoding.
@@ -186,15 +186,4 @@ A shared CMake helper module enforces the architectural boundary mechanically:
 * Exposes `include/abi/` via a header-only `INTERFACE` target (`oasis32_abi`).
 * Grants `bios/` access to both `oasis32_abi` and its own `PRIVATE` `bios/internal/` include path.
 * Grants `disks/` targets access **only** to `oasis32_abi` and the shared preprocessed `sd_payload.ld`, so any accidental attempt by SD-card code to include a BIOS-private or raw hardware header fails at build time.
-
----
-
-## 6. Open Questions
-
-The following architectural decision is intentionally deferred and will be resolved next during System ROM design:
-
-1. **Resident BIOS Calling Mechanism (ROM ABI):**
-   How should SRAM-loaded payloads invoke the resident BIOS routines in XIP Flash?
-   * *Option A — Fixed Jump Table (Vector Table):* A table of jump instructions at a fixed, well-known flash address (similar to the Commodore 64 KERNAL or CP/M BIOS). Simple, zero trap overhead, and direct `jal` calls.
-   * *Option B — `ecall` Trap / Syscall Interface:* Callers place a service ID in a register and execute RISC-V `ecall`, trapping into a single ROM dispatcher (similar to PC BIOS `INT` services or RISC-V SBI). Cleanly supports privilege separation later if desired, with slightly more dispatch overhead.
 
