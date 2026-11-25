@@ -91,7 +91,26 @@ Stage-2 payloads invoke resident BIOS services using the standard RISC-V `ecall`
   * Because the caller explicitly invoked `ecall` like a function call, its `sp` is valid. The dispatcher saves `mepc`, `mstatus`, and working registers on the caller's stack, advances `mepc += 4` (past the 4-byte `ecall` instruction), and **re-enables `mstatus.MIE`** (`§3.1.6, p. 38`) before calling the BIOS service implementation.
   * Because `mscratch` is reserved exclusively for Core 0 hardware IRQs, if a Core 0 peripheral interrupt fires *in the middle of a slow BIOS call* (such as an SD card block read or write), the IRQ handler cleanly swaps onto the private `mscratch` IRQ stack, services the interrupt with `MIE = 0`, and returns directly back into the in-progress BIOS call—with zero nested-stack ambiguity. (Meanwhile, DVI video runs autonomously on Core 1 and is never affected by Core 0 `ecall` activity.)
 
-### 5.1 Partitioned Service IDs & OS Syscall Extensibility
+### 5.1 Signed Return & Error Code Convention
+
+All BIOS `ecall` services share a uniform signed-integer return convention in `a0`:
+
+* **`a0 >= 0` (Success):** The call succeeded. Depending on the service, `a0` holds `0` (`ERR_OK`), a data byte (`0x00`–`0xFF`), a byte count, or a status bitmask.
+* **`a0 < 0` (Error):** The call failed or could not complete immediately, and `a0` holds a standardized negative error code defined in `include/abi/bios_abi.h`:
+
+| Constant | Value | Meaning |
+|:---|---:|:---|
+| `ERR_OK` | `0` | Success (generic non-value return). |
+| `ERR_UNSUPPORTED` | `-1` | Unknown or unimplemented service ID (`a7`). |
+| `ERR_INVALID_ARG` | `-2` | Invalid argument (e.g., out-of-range parameter or misaligned/invalid pointer). |
+| `ERR_EMPTY` | `-3` | Non-blocking read found no data available. |
+| `ERR_BUSY` | `-4` | Non-blocking write or device operation could not proceed (e.g., TX buffer full). |
+| `ERR_IO` | `-5` | Hardware or peripheral I/O failure (e.g., SD card CRC/timeout error). |
+| `ERR_NO_DEVICE` | `-6` | Removable device not present (e.g., no SD card inserted). |
+
+In RISC-V assembly, this lets callers distinguish *any* error from *any* valid byte (`0..255`), count, or bitmask with a single branch instruction (`bltz a0, error_handler`).
+
+### 5.2 Partitioned Service IDs & OS Syscall Extensibility
 
 To allow a Stage-2 operating system to expose its own address-independent syscalls to applications running on top of it—without touching `mtvec` or Flash—the `a7` service-ID space is partitioned into two ranges:
 
@@ -99,6 +118,20 @@ To allow a Stage-2 operating system to expose its own address-independent syscal
 |:---|:---|:---|
 | **`0x0000`–`0x00FF`** (0–255) | **Resident BIOS** | Dispatched directly from the BIOS's immutable Flash jump table (out-of-range IDs return `ERR_UNSUPPORTED`). |
 | **`0x0100`+** (256+) | **Stage-2 OS / User Extension** | Delegated to a single registered OS dispatcher function pointer (`os_ecall_handler`, stored in BIOS-private USB DPRAM and initialized to `0` at boot). |
+
+Within the BIOS range (`0x0000`–`0x00FF`), service IDs are grouped into **16-ID subsystem blocks** (high nibble = subsystem) so subsystems can be designed and populated incrementally without ever renumbering existing calls:
+
+| Service ID Block | Subsystem | Role |
+|:---|:---|:---|
+| `0x00`–`0x0F` | **System (`SYS_*`)** | BIOS version, reboot, `SYS_SET_OS_ECALL_HANDLER`. |
+| `0x10`–`0x1F` | **Serial (`SERIAL_*`)** | Debug/host `UART0` byte I/O and status. |
+| `0x20`–`0x2F` | **Video (`VIDEO_*`)** | VSYNC wait, frame counter, display helpers. |
+| `0x30`–`0x3F` | **Input (`KEY_*` / `MOUSE_*`)** | Keyboard and mouse event polling. |
+| `0x40`–`0x4F` | **Storage (`SD_*`)** | Raw 512-byte LBA block read/write, card presence & capacity. |
+| `0x50`–`0x5F` | **Timer (`TIME_*`)** | Monotonic 64-bit microsecond clock. |
+| `0x60`–`0x6F` | **Audio (`AUDIO_*`)** | Piezo buzzer tone frequency / silence control. |
+| `0x70`–`0x7F` | **LEDs (`LED_*`)** | 3-bit status LED control. |
+| `0x80`–`0xFF` | **Reserved** | Future BIOS expansion. |
 
 * **Registration via BIOS:** A Stage-2 OS registers (or clears, with `0`) its dispatcher via a dedicated BIOS call (`SYS_SET_OS_ECALL_HANDLER(fn_ptr)`). When an application executes `ecall` with `a7 >= 0x0100`:
   * If `os_ecall_handler == 0`, the BIOS returns `ERR_UNSUPPORTED`.
