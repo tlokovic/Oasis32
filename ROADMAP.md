@@ -119,7 +119,7 @@ With physical hardware integrity proven and frozen, the entire test harness is p
 
 ## Phase 3 (IN PROGRESS): System ROM / BIOS & Bootloader
 
-With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permanent, Flash-resident **Stage-1 System ROM (BIOS & Bootloader)** described in `docs/Architecture.md`. Rather than modifying `test_harness/asm/` (which remains preserved as a standalone Phase 2 reference), Phase 3 learns from it to establish a clean, modular multi-file architecture and the representational foundation that will support both BIOS and SD-card development.
+With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permanent, Flash-resident **Stage-1 System ROM (BIOS & Bootloader)** described in `docs/BootBehavior.md`. Rather than modifying `test_harness/asm/` (which remains preserved as a standalone Phase 2 reference), Phase 3 learns from it to establish a clean, modular multi-file architecture and the representational foundation that will support both BIOS and SD-card development.
 
 ### Architectural Constraints
 * **Zero Linked SDK / Runtime:** Pure bare-metal RISC-V assembly (`-nostdlib -nostartfiles -nodefaultlibs`).
@@ -127,7 +127,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * **Single Source of Truth:** Shared constants use pure `#define` headers (`.h`) consumed by both `.S` sources and preprocessed `.ld.S` linker script templates via a shared `cmake/oasis32.cmake` helper.
 
 ### Sub-Phase 3a: Architectural Decisions & Representational Foundation
-* Resolve the open System ROM design decisions in `docs/Architecture.md §6` (ROM ABI calling mechanism, LBA 0 Boot Image Header binary layout, no-card/invalid-disk fallback behavior, and host-to-SD-card development transfer workflow).
+* Resolve the open System ROM design decisions in `docs/BootBehavior.md §6` (ROM ABI calling mechanism, LBA 0 Boot Image Header binary layout, no-card/invalid-disk fallback behavior, and host-to-SD-card development transfer workflow).
 * Create `cmake/oasis32.cmake` with the `oasis32_abi` interface target, `.ld.S` preprocessing helper (using `gcc -E -P -x c` with `DEPFILE` tracking), and bare-metal disk target helper.
 * Author the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
 * Author the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
