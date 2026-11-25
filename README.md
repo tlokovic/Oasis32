@@ -1,11 +1,11 @@
-# Pico 2 Desert Island Computer
+# Oasis32 — Pico 2 Desert Island Computer
 
 ![Assembled Left Side](images/assembled_left_side.jpg)
 ![Assembled Left Side](images/assembled_right_side.jpg)
 
 ## 1. Overview
 
-The objective is to construct a "desert-island" computer that can be programmed entirely in baremetal
+**Oasis32** is a "desert-island" computer powered by the Raspberry Pi Pico 2 that can be programmed entirely in baremetal
 C++ or assembly without relying on any third-party code: no reliance on libraries, drivers, or SDKs.
 The hardware design ensures that all peripherals use simple DMA, UART, SPI, or GPIO.
 

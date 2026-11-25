@@ -1,8 +1,8 @@
-# Pico 2 Desert Island Computer Development Plan
+# Oasis32 Development Plan
 
 ## Project Overview
 
-The objective of this project is to construct a self-contained computer powered by the Raspberry Pi Pico 2 that can be programmed completely from bare-metal RISC-V assembly with zero third-party software, drivers, or SDKs.
+The objective of the **Oasis32** project is to construct a self-contained computer powered by the Raspberry Pi Pico 2 that can be programmed completely from bare-metal RISC-V assembly with zero third-party software, drivers, or SDKs.
 
 The roadmap is divided into three sequential phases:
 1. **Phase 1: Test Hardware with Pico C++ SDK:** Incrementally assemble, solder, and electrically verify the hardware peripherals using a non-blocking C++ test harness. Once complete, all soldering tools are put away and the physical platform is frozen as known-good.
@@ -118,7 +118,7 @@ With physical hardware integrity proven and frozen, the entire test harness is p
 
 ## Phase 3: OS Development
 
-With the bare-metal assembly drivers and execution harness established, Phase 3 builds the native "desert-island" operating system in bare-metal assembly.
+With the bare-metal assembly drivers and execution harness established, Phase 3 builds the native Oasis32 operating system in bare-metal assembly.
 
 ### Core Objectives
 * **Interactive Text Console:** Connect keyboard input from the CH9350 and display output via the DVI Sock to implement a text-mode terminal with an integrated font renderer and line-editing capabilities.

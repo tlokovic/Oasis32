@@ -1,8 +1,8 @@
-# Pico 2 Desert Island Computer — System Architecture
+# Oasis32 — System Architecture
 
 ## 1. Philosophy: A "Boot from Removable Disk" Computer
 
-The Pico 2 Desert Island Computer is designed in the tradition of classic microcomputers (such as the IBM PC, CP/M machines, and the Commodore 64): it is a **"boot from removable disk" computer** with **no built-in operating system**.
+**Oasis32** (the Pico 2 Desert Island Computer) is designed in the tradition of classic microcomputers (such as the IBM PC, CP/M machines, and the Commodore 64): it is a **"boot from removable disk" computer** with **no built-in operating system**.
 
 Rather than flashing a monolithic OS into the Pico 2's onboard flash memory, the onboard flash holds only a compact, permanent **System ROM (BIOS & Bootloader)**. Once this System ROM stabilizes, the Pico 2 rarely—or never—needs to be re-flashed over USB in `BOOTSEL` mode. Instead, what the computer does on power-up or reset is determined entirely by the **boot disk** inserted into the SD card slot.
 
@@ -76,7 +76,7 @@ Because software on SD cards is assembled and linked independently of the System
 ### 3.4 Boot Sector / Boot Image Header (SD Card)
 Bootable SD cards carry a small, structured **Boot Image Header** at a well-known block location (typically **LBA 0**, the first 512-byte sector). Conceptually, this header describes how the bootloader should load and launch the disk:
 
-* **Magic Number / Signature:** Identifies the SD card as a valid Pico 2 Desert Island boot disk (preventing the bootloader from executing unformatted or non-bootable cards).
+* **Magic Number / Signature:** Identifies the SD card as a valid Oasis32 boot disk (preventing the bootloader from executing unformatted or non-bootable cards).
 * **Header Version / Flags:** Allows future format extensions while maintaining backward compatibility.
 * **Load Address:** Target address in SRAM (`0x2000_0000`–`0x2007_FFFF`) where the payload will be copied (or a fixed conventional load address).
 * **Payload Size:** Number of bytes or 512-byte sectors to read from subsequent LBAs on the SD card.
@@ -119,7 +119,7 @@ The following architectural decisions are intentionally deferred and will be res
    Until the computer's own OS is mature enough for self-hosted development ("true desert island" mode), software will be cross-assembled on Windows and written to SD cards that do **not** use FAT32 (since designing a custom filesystem is part of the project). How should assembled images be transferred onto raw SD cards?
    * *Option A — Raw Block Imaging on Windows (Card Reader):* Assemble the payload and prepend the Boot Image Header into a flat `.img` file on Windows, then write raw sectors directly to the SD card via an elevated imaging tool or script (targeting `\\.\PhysicalDriveN`, e.g., `dd` for Windows, Win32DiskImager, or a custom Python/PowerShell script). Fast for large images and requires zero extra BIOS code, at the cost of physically swapping cards, needing Administrator privileges, guarding against targeting the wrong drive, and dismissing Windows "format disk" prompts.
      * *Refinement (MBR Wrapper):* Optionally placing a minimal MBR partition table at LBA 0 (marking our custom region with a non-Windows partition type) can prevent Windows from nagging to format the card while still leaving the filesystem 100% custom.
-   * *Option B — Serial Disk-Writer Mode in BIOS over `UART0` (CP2102N):* Boot the Pico 2 into a special BIOS transfer mode (our own "BOOTSEL over serial") that receives data over the `UART0` debug port and writes it directly to the SD card—eliminating physical card swapping altogether. Framing choices include:
+   * *Option B — Serial Disk-Writer Mode in BIOS over `UART0` (CP2102N):* Boot Oasis32 into a special BIOS transfer mode (our own "BOOTSEL over serial") that receives data over the `UART0` debug port and writes it directly to the SD card—eliminating physical card swapping altogether. Framing choices include:
      * *ASCII Text Encoding (Base64, Intel HEX, or Motorola S-Record):* Requires no custom host sender—encoded output (e.g., from `objcopy -O ihex` or a Base64 encoder) can be pasted or piped straight into a terminal like PuTTY. Intel HEX/S-Record also provide built-in per-line checksums.
      * *Standard Serial Protocol (XMODEM / YMODEM):* Packetized binary transfer with built-in CRCs and retransmission, natively supported by common serial terminals (e.g., Tera Term) and simple host scripts.
      * *Custom Framed Binary Protocol + Host Script:* A small Windows script (e.g., Python `pyserial`) sends length-prefixed, CRC-checked blocks directly from the build step—fastest over UART (especially if `UART0` is run above 115,200 baud).
