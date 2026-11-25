@@ -4,7 +4,7 @@
 
 ## Overview
 
-**Oasis32** is a 32-bit "fantasy retro" computer built around a Raspberry Pi Pico 2. It is an experiment in intentional simplicity: a machine small and transparent enough for a single programmer to understand completely, from the bare metal up, while still being genuinely fun to program.
+**Oasis32** is a 32-bit "fantasy retro" computer built around a Raspberry Pi Pico 2. It is an experiment in intentional simplicity: a machine small and transparent enough for a single programmer to understand, from the bare metal up, while still being genuinely fun to program.
 
 Modern computers are too complex and too multi-layered to really understand top-to-bottom. 1980s computers were wonderfully comprehensible, but were cramped by 8-bit instruction sets, composite video, and floppy disks. **Oasis32** bridges the two worlds:
 
