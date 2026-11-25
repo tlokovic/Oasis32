@@ -4,10 +4,11 @@
 
 The objective of the **Oasis32** project is to construct a self-contained computer powered by the Raspberry Pi Pico 2 that can be programmed completely from bare-metal RISC-V assembly with zero third-party software, drivers, or SDKs.
 
-The roadmap is divided into three sequential phases:
+The roadmap is divided into four sequential phases:
 1. **Phase 1: Test Hardware with Pico C++ SDK:** Incrementally assemble, solder, and electrically verify the hardware peripherals using a non-blocking C++ test harness. Once complete, all soldering tools are put away and the physical platform is frozen as known-good.
 2. **Phase 2: Port Test Harness to RISC-V Assembly:** Re-implement the full test harness in pure, bare-metal RISC-V assembly with zero linked libraries or SDK code, establishing our hardware-abstraction foundation.
-3. **Phase 3: OS Development:** Build the native operating system, interactive shell, filesystem, and programming environment on top of the bare-metal assembly foundation.
+3. **Phase 3: System ROM / BIOS & Bootloader:** Establish the project's representational foundation (layered headers, preprocessed linker scripts, and CMake boundary enforcement) and build the Flash-resident Oasis32 BIOS, stable ROM ABI, and SD-card bootloader.
+4. **Phase 4: SD-Card Software & OS Development:** Develop standalone bootable demos, utilities, and the native Oasis32 operating system (interactive console, shell/monitor, custom filesystem, and program loader) as SD-card payloads targeting the published BIOS ABI.
 
 ---
 
@@ -116,12 +117,44 @@ With physical hardware integrity proven and frozen, the entire test harness is p
 
 ---
 
-## Phase 3: OS Development
+## Phase 3: System ROM / BIOS & Bootloader
 
-With the bare-metal assembly drivers and execution harness established, Phase 3 builds the native Oasis32 operating system in bare-metal assembly.
+With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permanent, Flash-resident **Stage-1 System ROM (BIOS & Bootloader)** described in `ARCHITECTURE.md`. Rather than modifying `test_harness/asm/` (which remains preserved as a standalone Phase 2 reference), Phase 3 learns from it to establish a clean, modular multi-file architecture and the representational foundation that will support both BIOS and SD-card development.
+
+### Architectural Constraints
+* **Zero Linked SDK / Runtime:** Pure bare-metal RISC-V assembly (`-nostdlib -nostartfiles -nodefaultlibs`).
+* **Strict ABI Boundary:** Public contracts live in `include/` (`abi/` headers + `ld/sd_payload.ld.S`); all RP2350 register maps, Oasis32 pin wiring (`hw/`), and BIOS-private state live strictly inside `bios/internal/` and are never exposed to `disks/`.
+* **Single Source of Truth:** Shared constants use pure `#define` headers (`.h`) consumed by both `.S` sources and preprocessed `.ld.S` linker script templates via a shared `cmake/oasis32.cmake` helper.
+
+### Sub-Phase 3a: Architectural Decisions & Representational Foundation
+* Resolve the open System ROM design decisions in `ARCHITECTURE.md §6` (ROM ABI calling mechanism, LBA 0 Boot Image Header binary layout, no-card/invalid-disk fallback behavior, and host-to-SD-card development transfer workflow).
+* Create `cmake/oasis32.cmake` with the `oasis32_abi` interface target, `.ld.S` preprocessing helper (using `gcc -E -P -x c` with `DEPFILE` tracking), and bare-metal disk target helper.
+* Author the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
+* Author the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
+
+### Sub-Phase 3b: Modular Hardware Bring-Up & Resident Drivers
+* Organize the validated Phase 2 hardware bring-up and drivers into clean, modular `.S` files under `bios/src/`:
+  * Boot entry, `PICOBIN` `IMAGE_DEF`, clock tree (`XOSC` -> `PLL_SYS` @ 126 MHz), `RESETS`, `PADS_BANK0` `ISO` clearing, and `TIMER0` 1 µs timebase.
+  * Status LEDs (`SIO`), piezo buzzer (`PWM`), debug serial (`UART0`), DVI/HSTX display + DMA IRQ, CH9350 keyboard/mouse (`UART1`), and SD card block I/O (`SPI0` + `GP6` card detect).
+* Confine all BIOS-private buffers, DMA descriptors, and driver state cleanly to the BIOS-reserved SRAM region defined in `memory_map.h` and `bios_ram.h`.
+
+### Sub-Phase 3c: Stable Resident BIOS ABI & Fallback Behavior
+* Implement the Stage-1 Resident BIOS ABI dispatcher (`bios/src/abi_dispatch.S`) exposing hardware I/O services (display/framebuffer, serial, keyboard/mouse, SD block read/write, timer, buzzer, LEDs) to SRAM-loaded payloads.
+* Implement the chosen no-card / invalid-disk fallback behavior (e.g., boot prompt, minimal ROM monitor, and/or serial loader over `UART0`).
+
+### Sub-Phase 3d: SD Bootloader & End-to-End Boot Verification
+* Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the LBA 0 Boot Image Header, load payload sectors into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
+* Verify the complete boot chain with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
+
+---
+
+## Phase 4: SD-Card Software & OS Development
+
+With the Flash-resident System ROM stabilized and the SD boot chain verified, Phase 4 shifts development to swappable **Stage-2 Bootable Disks** in `disks/`. All software in this phase interacts with the machine strictly through the published BIOS ABI in `include/abi/`.
 
 ### Core Objectives
-* **Interactive Text Console:** Connect keyboard input from the CH9350 and display output via the DVI Sock to implement a text-mode terminal with an integrated font renderer and line-editing capabilities.
-* **Command Shell & Monitor:** Provide an interactive REPL with built-in commands for memory inspection/modification, hardware diagnostics, register dumping, and execution control.
-* **Block Storage & Filesystem:** Expand the raw SPI SD card driver with a filesystem driver (e.g., standard FAT32 or a lightweight custom filesystem) to persist files, configuration, and scripts.
-* **Program Loading & Execution:** Implement an execution loader capable of reading binary programs from storage into RAM, transferring execution, and returning cleanly to the OS shell.
+* **Standalone Demos & Utilities:** Build small bootable SD-card programs to validate and stress-test BIOS ABI services (video, input, storage, audio, serial).
+* **Interactive Text Console:** Connect keyboard input and display output via the BIOS ABI to implement a text-mode terminal with an integrated font renderer and line-editing capabilities.
+* **Command Shell & Monitor:** Provide an interactive REPL with built-in commands for memory inspection/modification, diagnostics, and execution control.
+* **Block Storage & Filesystem:** Build a custom filesystem on top of the BIOS SD block I/O services to persist files, configuration, and programs.
+* **Program Loading & Execution:** Implement an OS-level loader capable of reading user programs from the filesystem into User SRAM, transferring execution, and returning cleanly to the OS shell.

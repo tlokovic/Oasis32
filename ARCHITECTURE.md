@@ -71,7 +71,7 @@ Our permanent, bare-metal RISC-V assembly firmware stored in QSPI Flash and exec
    * Detect an inserted SD card (`GP6`), perform the SPI initialization handshake, read and validate the **Boot Image Header**, copy the **Boot Payload** from the SD card into SRAM, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
 
 ### 3.3 Stable ROM ABI (Application Binary Interface)
-Because software on SD cards is assembled and linked independently of the System ROM, it must be able to call resident BIOS routines without breaking if the System ROM is ever updated or bug-fixed. A **Stable ROM ABI** decouples callers from internal ROM addresses using a fixed contract (such as a fixed-address Jump Table or a RISC-V `ecall` trap dispatcher—see [Open Questions](#5-open-questions)).
+Because software on SD cards is assembled and linked independently of the System ROM, it must be able to call resident BIOS routines without breaking if the System ROM is ever updated or bug-fixed. A **Stable ROM ABI** decouples callers from internal ROM addresses using a fixed contract (such as a fixed-address Jump Table or a RISC-V `ecall` trap dispatcher—see [Open Questions](#6-open-questions)).
 
 ### 3.4 Boot Sector / Boot Image Header (SD Card)
 Bootable SD cards carry a small, structured **Boot Image Header** at a well-known block location (typically **LBA 0**, the first 512-byte sector). Conceptually, this header describes how the bootloader should load and launch the disk:
@@ -96,11 +96,67 @@ Any software written to an SD card—ranging from tiny standalone graphics demos
 This architecture establishes a clean boundary between two distinct layers of the project:
 
 * **System ROM (BIOS & Bootloader) — Flash-Resident:** Stable, minimal, hardware-facing firmware. Changes infrequently once validated.
-* **Boot Disks (Demos, Games, Monitor, OS) — SD-Card-Resident:** Rapidly iterable, swappable software that relies on the System ROM's BIOS ABI (or optionally takes direct control of hardware when desired).
+* **Boot Disks (Demos, Games, Monitor, OS) — SD-Card-Resident:** Rapidly iterable, swappable software that interacts with the machine strictly through the System ROM's BIOS ABI.
 
 ---
 
-## 5. Open Questions
+## 5. Repository Structure & Representational Foundation
+
+To enforce the boundary between the Flash-resident System ROM and SD-card-resident software, the codebase is organized into a **two-layer include model** backed by build-system visibility rules.
+
+### 5.1 Directory Layout
+
+```text
+Oasis32/
+├── cmake/
+│   └── oasis32.cmake            # Shared bare-metal & .ld.S preprocessing helpers
+├── include/                     # PUBLIC ABI (visible to both bios/ and disks/)
+│   ├── abi/
+│   │   ├── memory_map.h         # Flash/SRAM regions, BIOS vs. User SRAM boundary
+│   │   ├── boot_header.h        # LBA 0 Boot Image Header magic, offsets, flags
+│   │   ├── bios_abi.h           # ABI entry point, service IDs / vectors, error codes
+│   │   └── devices.h            # Public device constants (display geometry, HID, LEDs)
+│   └── ld/
+│       └── sd_payload.ld.S      # Shared linker script template for SD payloads
+├── bios/                        # Stage-1 System ROM (Flash-resident)
+│   ├── CMakeLists.txt
+│   ├── internal/                # PRIVATE TO BIOS (never exposed to disks/)
+│   │   ├── hw/                  # RP2350 silicon register maps & Oasis32 pin wiring
+│   │   ├── bios_ram.h           # Private BIOS SRAM buffers, driver state, DMA blocks
+│   │   ├── bios_flash.h         # PICOBIN IMAGE_DEF & internal ROM layout
+│   │   └── bios_config.h        # Clock/PLL tuning, UART divisors, DMA channel map
+│   ├── ld/
+│   │   └── bios.ld.S            # BIOS linker script template
+│   └── src/                     # Modular BIOS .S source files
+└── disks/                       # Stage-2 Bootable SD-Card Payloads
+    └── ...
+```
+
+*(Note: `test_harness/` from Phases 1–2 is preserved unmodified as a standalone hardware-verification reference.)*
+
+### 5.2 Visibility Boundaries
+
+* **Public ABI (`include/`):** Holds only the stable binary contract shared between Stage 1 (BIOS) and Stage 2 (SD payloads)—memory map boundaries, LBA 0 boot header layout, BIOS ABI entry points/service IDs, public device constants, and the shared SD payload linker template. Changes here are treated as breaking contracts.
+* **BIOS Private (`bios/internal/`):** Holds all RP2350 silicon register definitions, Oasis32 board pin wiring (`hw/`), internal BIOS SRAM layouts, PICOBIN metadata, clock/PLL tuning, and DMA channel assignments. Keeping these strictly private ensures SD-card software hews exclusively to the published BIOS ABI and allows BIOS internals to be refactored without breaking existing boot disks.
+
+### 5.3 Single Source of Truth Across Assembly & Linker Scripts
+
+To avoid duplicating addresses or sizes between assembly sources and linker scripts:
+
+* **Pure `#define` Headers (`.h`):** Shared constant headers contain only `#define` integer/hex expressions and `/* ... */` comments—no GAS `.equ` directives, no C types, and no integer suffixes like `U`/`UL` (which GNU `ld` rejects). Assembly-only helpers (such as GAS `.macro` wrappers) live in separate `.inc` files or are guarded with `#ifdef __ASSEMBLER__`.
+* **Preprocessed Linker Scripts (`.ld.S`):** Both `bios/ld/bios.ld.S` and `include/ld/sd_payload.ld.S` are C-preprocessed into `.ld` files in the build directory at build time using the existing RISC-V toolchain (`riscv32-unknown-elf-gcc -E -P -x c`) with `-MD -MF` dependency files (`DEPFILE`) so edits to any included `.h` file automatically trigger re-preprocessing and relinking.
+
+### 5.4 Build-Time Enforcement (`cmake/oasis32.cmake`)
+
+A shared CMake helper module enforces the architectural boundary mechanically:
+
+* Exposes `include/abi/` via a header-only `INTERFACE` target (`oasis32_abi`).
+* Grants `bios/` access to both `oasis32_abi` and its own `PRIVATE` `bios/internal/` include path.
+* Grants `disks/` targets access **only** to `oasis32_abi` and the shared preprocessed `sd_payload.ld`, so any accidental attempt by SD-card code to include a BIOS-private or raw hardware header fails at build time.
+
+---
+
+## 6. Open Questions
 
 The following architectural decisions are intentionally deferred and will be resolved during System ROM design:
 
