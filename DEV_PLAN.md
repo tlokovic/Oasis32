@@ -146,6 +146,21 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the LBA 0 Boot Image Header, load payload sectors into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
 * Verify the complete boot chain with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
 
+### Phase 3 Deliverable: Oasis32 Programmer's Reference (`PROGRAMMERS_REFERENCE.md`)
+Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep with `include/abi/`, this manual serves as the authoritative, self-contained specification for programming Oasis32 (in the spirit of the *Commodore 64 Programmer's Reference Guide*).
+
+* **Core Boundary Principle:** Defines everything an Oasis32 programmer needs—and is allowed—to know. The underlying RP2350, Pico 2, Hazard3, CH9350, CP2102N, and SD SPI hardware are treated strictly as hidden implementation details. The manual must **never** reference overly permissive vendor hardware datasheets or "slice" the RP2350 datasheet; if a raw RP2350 register ever needs to be mentioned, that signals a missing or leaking BIOS abstraction.
+* **Circumscribed Programmer's Bookshelf:** Defers externally **only** to two standard specifications:
+  1. **RISC-V Unprivileged ISA Specification** (`riscv-unprivileged.pdf`), scoped strictly by Oasis32's declared standard unprivileged ISA string (e.g., `RV32IMAC_Zifencei`; explicitly excluding `riscv-privileged.pdf` and Hazard3-proprietary `Xh3*` extensions).
+  2. **RISC-V ELF psABI Specification** (`ILP32` calling convention).
+* **Required Specification Chapters:**
+  1. **Machine Model & Execution Rules:** 32-bit little-endian RISC-V, exact declared ISA string, nominal 126 MHz clock, single-core execution model, and explicit prohibition on direct MMIO, privileged CSR, or reserved-memory access.
+  2. **Memory Map Contract:** User SRAM window (`USER_RAM_BASE`–`USER_RAM_END`), initial 16-byte-aligned stack top (`USER_STACK_TOP`), reserved/off-limits zones, and usage of `include/abi/memory_map.h` and `include/ld/sd_payload.ld.S`.
+  3. **Bootable Disk Format & Startup State:** Exact LBA 0 Boot Image Header binary layout, guaranteed CPU/peripheral state upon jumping to the payload entry point, and clean exit/reboot semantics.
+  4. **BIOS ABI & Calling Contract:** Invocation mechanism (Jump Table or `ecall`), `ILP32` register preservation rules, and standard return/error codes.
+  5. **Resident BIOS Services Reference:** Complete input/output, blocking/non-blocking, and error specifications for Display/Framebuffer (base, `640×480` 1 bpp geometry, `80`-byte stride, exact bit-to-pixel ordering, VSYNC/frame counter), Keyboard/Mouse polling & report formats, SD 512-byte LBA block read/write & capacity, Debug Serial Console, monotonic µs System Time, Piezo Audio tone control, 3-bit Status LEDs, and System Control (version, reboot).
+  6. **Self-Contained Appendices:** Compact 1-page USB HID Keyboard (`Usage Page 0x07`) scan code & modifier table (avoiding the external USB HID Usage Tables PDF), ASCII table, public `include/abi/*.h` quick reference, and built-in ROM fallback/monitor usage (if applicable).
+
 ---
 
 ## Phase 4: SD-Card Software & OS Development
