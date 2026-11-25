@@ -83,11 +83,9 @@ This single rule naturally covers every display use case without any mode-switch
 Because Core 1 uses less than ~20% of its `4,000`-cycle scanline budget for `FRAMEBUF | FONT_RAM[TEXT_BUF]` compositing, the Video Coprocessor has ample RAM and timing headroom to add **hardware-style sprites and a floating mouse cursor** in a future revision—without taking a single byte from the 464 KB User SRAM.
 
 ### RAM Headroom (Zero Impact on User SRAM)
-Two existing memory pockets can host sprite data without shrinking `USER_RAM`:
-1. **BIOS Growth Headroom (`0x2007_F700`–`0x2007_FFFF`):** `2,304` bytes already reserved at the top of Main SRAM.
-2. **Unused RP2350 USB DPRAM (`0x5010_0000`–`0x5010_0FFF`):** `4,096` bytes of single-cycle, zero-contention AHB data SRAM (`rp2350-datasheet.pdf §4.2.1, p. 312`), completely idle because Oasis32 uses the CH9350 and CP2102N rather than on-chip USB.
+Because BIOS-private driver state lives in the RP2350's unused 4 KB USB DPRAM (`0x5010_0000`–`0x5010_0FFF`, see [MemoryMap.md](MemoryMap.md)), the top **`3,904` bytes** of Main SRAM (`0x2007_F0C0`–`0x2007_FFFF`)—immediately above `TEXT_BUF`—are reserved exclusively for future video features, keeping all public video memory (framebuffer, font, text, and sprites) in one contiguous `0x2007_4000`–`0x2007_FFFF` block without touching the 464 KB User SRAM.
 
-A classic **32-sprite masked `16×16` engine** (with Sprite 0 acting as a hardware mouse cursor) fits cleanly in **`2,304` bytes**:
+A classic **32-sprite masked `16×16` engine** (with Sprite 0 acting as a hardware mouse cursor) fits comfortably in **`2,304` bytes** of that `3,904`-byte reserve (leaving `1,600` bytes for alignment and further video expansion):
 * **Sprite Pattern RAM (`2,048` bytes):** `32` distinct `16×16` masked sprites (`2` bytes/row × `16` rows × `2` planes [pixels + transparency mask] = `64` bytes/sprite), enabling crisp opaque white-with-black-outline cursors and game sprites over any background. *(Or 64 unmasked OR/XOR sprites.)*
 * **OAM / Sprite Attribute Table (`256` bytes):** `32` simultaneous sprite slots × `8` bytes each:
   * Packed 32-bit `[y:16 | x:16]` (signed coordinates for smooth off-screen clipping, updatable atomically in a single `sw` instruction)

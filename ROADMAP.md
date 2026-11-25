@@ -137,7 +137,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
   * Boot entry, `PICOBIN` `IMAGE_DEF`, clock tree (`XOSC` -> `PLL_SYS` @ 126 MHz), `RESETS`, `PADS_BANK0` `ISO` clearing, and `TIMER0` 1 µs timebase.
   * Status LEDs (`SIO`), piezo buzzer (`PWM`), debug serial (`UART0`), CH9350 keyboard/mouse (`UART1`), and SD card block I/O (`SPI0` + `GP6` card detect).
   * Core 1 Video Coprocessor bring-up (launched via SIO inter-core FIFO, private stack in Scratchpad Bank 9): initializes default `FONT_RAM` (glyph `0x00` empty), drives `HSTX` + ping-pong DMA scanlines compositing `FRAMEBUF | FONT_RAM[TEXT_BUF]`, and maintains the VSYNC frame counter.
-* Confine all BIOS-private buffers, DMA descriptors, and driver state cleanly to the BIOS-reserved SRAM region defined in `memory_map.h` and `bios_ram.h`.
+* Confine all BIOS-private driver state cleanly to the 4 KB USB DPRAM (`0x5010_0000`, deasserting `USBCTRL` in `RESETS` while keeping the USB controller disabled) and BIOS stacks/ping-pong buffers to Scratchpad Banks 8–9 (`bios_ram.h`), leaving 100% of Main SRAM user-facing (`memory_map.h`).
 
 ### Sub-Phase 3c: Stable Resident BIOS ABI & Interactive Boot Menu / Serial Loader
 * Implement the Vectored `mtvec` trap architecture on Core 0 (`mscratch` private BIOS IRQ stack in Bank 8 + `ecall` ABI dispatcher in `bios/src/abi_dispatch.S` with `mstatus.MIE` re-enabled during service calls) exposing hardware I/O services (display buffers/VSYNC, serial, keyboard/mouse, SD block read/write, timer, buzzer, LEDs) to SRAM-loaded payloads.

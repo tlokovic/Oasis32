@@ -15,11 +15,12 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 | `0x1000_0000`–`0x103F_FFFF` | 4 MB* | XIP Cached Flash | Private | Stage-1 System ROM / BIOS (Execute-In-Place). | `rp2350-datasheet.pdf §2.2.2, p. 26` |
 | `0x2000_0000`–`0x2007_3FFF` | 464 KB | Main SRAM (Banks 0–7) | **Public** | Contiguous **User SRAM** (Stage-2 code, data, stack). | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x2007_4000`–`0x2007_F0BF` | ~44.2 KB | Main SRAM (Bank 7) | **Public** | Shared **Video Buffers** (`FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`). | `rp2350-datasheet.pdf §4.2, p. 312` |
-| `0x2007_F0C0`–`0x2007_FFFF` | ~3.8 KB | Main SRAM (Bank 7) | Private | **BIOS Private State** & driver buffers. | `rp2350-datasheet.pdf §4.2, p. 312` |
+| `0x2007_F0C0`–`0x2007_FFFF` | ~3.8 KB | Main SRAM (Bank 7) | Reserved | **Future Video / Sprite Reserve** (keeps all video memory contiguous). | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x2008_0000`–`0x2008_0FFF` | 4 KB | Scratchpad Bank 8 | Private | **Core 0 BIOS IRQ stack** (`mscratch`) & boot stack. | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x2008_1000`–`0x2008_1FFF` | 4 KB | Scratchpad Bank 9 | Private | **Core 1 Video Coprocessor** ping-pong lines & stack. | `rp2350-datasheet.pdf §4.2, p. 312` |
 | `0x4000_0000`–`0x4016_FFFF` | 1.5 MB | APB Peripherals | Private | `CLOCKS`, `RESETS`, `IO`/`PADS`, `UART0/1`, `SPI0`, `PWM`, `TIMER0`. | `rp2350-datasheet.pdf §2.2.4, p. 28` |
-| `0x5000_0000`–`0x507F_FFFF` | 8 MB | AHB Peripherals | Private | `DMA`, `HSTX`, `PIO0–2`, `USB`, `QMI`. | `rp2350-datasheet.pdf §2.2.5, p. 29` |
+| `0x5010_0000`–`0x5010_0FFF` | 4 KB | USB DPRAM (AHB) | Private | **BIOS Private State** & driver buffers (data-only, USB disabled). | `rp2350-datasheet.pdf §12.7.1.1.3, p. 1058` |
+| `0x5000_0000`–`0x507F_FFFF` | 8 MB | AHB Peripherals | Private | `DMA`, `HSTX`, `PIO0–2`, `USB` (DPRAM above), `QMI`. | `rp2350-datasheet.pdf §2.2.5, p. 29` |
 | `0xD000_0000`–`0xD001_FFFF` | 128 KB | SIO (Per-Core) | Private | Single-cycle GPIO, inter-core FIFOs, spinlocks. | `rp2350-datasheet.pdf §3.1, p. 34` |
 
 *\*The XIP cached window spans 64 MB (`0x1000_0000`–`0x13FF_FFFF`); the Pico 2 populates 4 MB of external QSPI flash.*
@@ -38,14 +39,9 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
             │ Scratchpad Bank 8 (4 KB, non-striped) — BIOS PRIVATE         │
             │   0x2008_0000–0x2008_0FFF  Core 0 IRQ Stack (mscratch ↓)     │
 0x2008_0000 ╞══════════════════════════════════════════════════════════════╡
-            │ BIOS Private State (3,840 B + 64 B pad) — BIOS PRIVATE       │
-            │   0x2007_F700–0x2007_FFFF  BIOS growth headroom (2,304 B)    │
-            │   0x2007_F640–0x2007_F6FF  Misc driver state (192 B)         │
-            │   0x2007_F600–0x2007_F63F  Video control / vsync_count (64 B)│
-            │   0x2007_F500–0x2007_F5FF  UART0 state / RX ring (256 B)     │
-            │   0x2007_F300–0x2007_F4FF  CH9350 HID / key ring (512 B)     │
-            │   0x2007_F100–0x2007_F2FF  SD 1-sector staging buffer (512 B)│
-            │   0x2007_F0C0–0x2007_F0FF  Alignment padding (64 B)          │
+            │ Future Video / Sprite Reserve (3,904 B) — RESERVED           │
+            │   0x2007_F0C0–0x2007_FFFF  Reserved for future Sprite RAM    │
+            │                            + OAM (0 bytes taken from User)   │
 0x2007_F0C0 ├──────────────────────────────────────────────────────────────┤
             │ Shared Video Buffers (45,248 B) — PUBLIC ABI                 │
             │   0x2007_DE00–0x2007_F0BF  TEXT_BUF  (80×60 = 4,800 B)       │
@@ -78,19 +74,22 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 
 ---
 
-### 2.2 BIOS-Private Main SRAM (`bios/internal/bios_ram.h`)
+### 2.2 BIOS-Private State in USB DPRAM (`0x5010_0000`–`0x5010_0FFF`, `bios/internal/bios_ram.h`)
 
-Reserved at the top of Main SRAM (`0x2007_F0C0`–`0x2007_FFFF`, `3,904` bytes total = `64` B pad + `3,840` B state):
+Because Oasis32 uses the CH9350 ASIC for keyboard/mouse and CP2102N for serial, the RP2350's on-chip USB controller remains disabled and its **4,096-byte dual-port SRAM (`USBCTRL_DPRAM_BASE = 0x5010_0000`)** is available as general-purpose data RAM (`rp2350-datasheet.pdf §12.7.1.1.3, pp. 1058–1059`).
+
+* **Hardware properties:** Accessible by Core 0, Core 1, and DMA over AHB5 with zero Main SRAM bank contention; supports 8/16/32-bit reads (2 cycles) and writes (1 cycle); strictly **non-executable** (data-only, `§4.2.1, p. 312`).
+* **Startup requirement:** Deassert `USBCTRL` in `RESETS->RESET` and poll `RESETS->RESET_DONE` before accessing `0x5010_0000` (the USB controller stays disabled; `PLL_USB`/`clk_usb` are not needed).
+* **Architectural payoff:** Moving all BIOS-private driver state into USB DPRAM physically isolates BIOS variables from User SRAM/Video RAM and leaves **100% of the 512 KB Main SRAM** user-facing (464 KB User SRAM + 48 KB Video & Future Sprite Reserve).
 
 | Sub-Region | Address Range | Size | Purpose |
 |:---|:---|---:|:---|
-| Alignment Pad | `0x2007_F0C0`–`0x2007_F0FF` | 64 B | Aligns BIOS private block to 256-byte boundary. |
-| SD Sector Staging Buffer | `0x2007_F100`–`0x2007_F2FF` | 512 B | Single-sector buffer for reading LBA 0 (`"OA32"` header + first 496 payload bytes) and BIOS SD helpers. |
-| CH9350 HID State (`UART1`) | `0x2007_F300`–`0x2007_F4FF` | 512 B | 11-byte State-2 packet assembler, active 8-byte keyboard report, key-event ring buffer, and accumulated mouse deltas (`dX`, `dY`, `wheel`, buttons). |
-| Debug Serial State (`UART0`) | `0x2007_F500`–`0x2007_F5FF` | 256 B | Optional interrupt-driven RX ring buffer & state (backing the PL011's 32-byte hardware FIFOs). |
-| Video Control / Sync Block | `0x2007_F600`–`0x2007_F63F` | 64 B | Shared Core 1 → Core 0 status (`vsync_count`, plus room for future cursor/scroll fields). |
-| Misc Driver State | `0x2007_F640`–`0x2007_F6FF` | 192 B | SD `CCS`/capacity flags, LED shadow bits, piezo state, boot flags, BIOS runtime scratch. |
-| BIOS Growth Headroom | `0x2007_F700`–`0x2007_FFFF` | 2,304 B | Unallocated reserve so future BIOS updates never shift `USER_RAM_END` or break existing boot disks. |
+| SD Sector Staging Buffer | `0x5010_0000`–`0x5010_01FF` | 512 B | Single-sector buffer for reading LBA 0 (`"OA32"` header + first 496 payload bytes) and BIOS SD helpers. |
+| CH9350 HID State (`UART1`) | `0x5010_0200`–`0x5010_03FF` | 512 B | 11-byte State-2 packet assembler, active 8-byte keyboard report, key-event ring buffer, and accumulated mouse deltas (`dX`, `dY`, `wheel`, buttons). |
+| Debug Serial State (`UART0`) | `0x5010_0400`–`0x5010_04FF` | 256 B | Optional interrupt-driven RX ring buffer & state (backing the PL011's 32-byte hardware FIFOs). |
+| Video Control / Sync Block | `0x5010_0500`–`0x5010_053F` | 64 B | Shared Core 1 → Core 0 status (`vsync_count`, plus room for future cursor/scroll/OAM flags). |
+| Misc Driver State | `0x5010_0540`–`0x5010_05FF` | 192 B | SD `CCS`/capacity flags, LED shadow bits, piezo state, boot flags, BIOS runtime scratch. |
+| BIOS Growth Headroom | `0x5010_0600`–`0x5010_0FFF` | 2,560 B | Unallocated private reserve (2.5 KB) for future BIOS features without touching Main SRAM. |
 
 ---
 
@@ -114,7 +113,7 @@ Unlike a 6502 (where hardware forces IRQs onto the single `$0100–$01FF` stack)
 | Stack | Initial `sp` (Top) | Floor | Size | Typical Usage | Overflow Behavior (↓) | Underflow Behavior (↑) |
 |:---|:---|:---|---:|:---|:---|:---|
 | **Core 0 User Stack** *(also used by `ecall`)* | `0x2007_4000` | Dynamic (above payload `.bss`/heap) | Up to **464 KB** (shared with program) | A few KB–tens of KB (plus ~64–128 B during `ecall`) | **Silent corruption** of user `.bss`/heap/code (bus fault only if wrapping below `0x2000_0000`). | **Silent corruption** of `FRAMEBUF` (`0x2007_4000`+), visible as stray pixels at top-left of screen. |
-| **Core 0 BIOS IRQ & Boot Stack** *(held in `mscratch`)* | `0x2008_1000` | `0x2008_0000` | **4,096 B** (4 KB) | < 128 B in non-nested IRQs; ~256–512 B during boot menu | **Silent corruption** into top of BIOS Private State (`0x2007_FFFF` ↓, hitting growth headroom first). | **Silent corruption** into Bank 9 (`0x2008_1000`+), clobbering Core 1's ping-pong scanline buffers. |
+| **Core 0 BIOS IRQ & Boot Stack** *(held in `mscratch`)* | `0x2008_1000` | `0x2008_0000` | **4,096 B** (4 KB) | < 128 B in non-nested IRQs; ~256–512 B during boot menu | **Silent corruption** into the Future Video / Sprite Reserve (`0x2007_FFFF` ↓, never touching BIOS state in USB DPRAM). | **Silent corruption** into Bank 9 (`0x2008_1000`+), clobbering Core 1's ping-pong scanline buffers. |
 | **Core 1 Video Coprocessor Stack** | `0x2008_2000` | `0x2008_1200` | **3,584 B** (3.5 KB) | < 128 B (flat, non-recursive scanline loop) | **Silent corruption** into Core 1 HSTX DMA command lists (`0x2008_10A0`–`0x2008_11FF`) and ping-pong line buffers, glitching video. | **Hardware bus fault!** `0x2008_2000` is unmapped AHB space above SRAM → Load/Store Access Fault (`mcause = 5/7`, `riscv-privileged.pdf §3.1.12, p. 53`). |
 
 ### Design Rationale & Fault Detection
@@ -140,7 +139,7 @@ The Stage-1 System ROM executes directly from external QSPI Flash via the 16 KB 
 
 ## 5. Memory Ownership & Striping Summary
 
-* **Total Physical SRAM:** `520 KB` (`532,480` B) = `512 KB` Main + `8 KB` Scratchpad.
-* **Total Publicly Usable by Stage-2 Software:** `464 KB` User SRAM + `44.19 KB` Video Buffers = **`508.19 KB` (~97.7% of total SRAM)**.
-* **Total Strictly BIOS-Private:** `3.81 KB` (Main SRAM top) + `8 KB` (Scratchpad Banks 8–9) = **`11.81 KB` (~2.3% of total SRAM)**.
+* **Total On-Chip RAM Used:** `524 KB` (`536,576` B) = `512 KB` Main SRAM + `8 KB` Scratchpad SRAM + `4 KB` USB DPRAM.
+* **Main SRAM (512 KB — 100% User-Facing):** `464 KB` User SRAM + `44.19 KB` Video Buffers + `3.81 KB` Future Video / Sprite Reserve (zero BIOS-private data in Main SRAM).
+* **Strictly BIOS-Private (`12 KB` total):** `8 KB` Scratchpad SRAM (Banks 8–9 stacks & Core 1 scanline buffers) + `4 KB` USB DPRAM (`0x5010_0000`–`0x5010_0FFF`, all BIOS driver state & buffers).
 * **Single Source of Truth:** All public constants live in `include/abi/memory_map.h` (consumed by both `bios/` and `disks/` via preprocessed `.ld.S` scripts); all private offsets live in `bios/internal/bios_ram.h` and `bios/internal/bios_flash.h`.
