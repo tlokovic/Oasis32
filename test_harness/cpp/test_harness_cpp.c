@@ -1,7 +1,7 @@
 /**
- * Pico 2 Desert Island Computer - Phase 1 Hardware Test Harness (Sub-Phase 1e)
+ * Pico 2 Desert Island Computer - Phase 1 Hardware Test Harness (Sub-Phase 1f)
  *
- * Non-blocking cooperative polling loop verifying:
+ * Non-blocking cooperative polling loop verifying all hardware concurrently:
  *   - Status LEDs: Red (GP26) -> Green (GP27) -> Blue (GP28), advancing every 1 s
  *   - Piezo Buzzer: GP22 (PWM3 A), 1 kHz tone for 100 ms every 3 s
  *   - Hardware Reset: RUN pin (Pin 30) cleanly restarts sequence
@@ -14,8 +14,11 @@
  *       * Ping-pong DMA paced by DREQ_HSTX with hardware TMDS encoding
  *       * Static 1 px border + 20x15 (32x32 px) grid + bouncing 32x32 XOR box
  *   - Keyboard/Mouse Host (CH9350): UART1 (GP20 TX, GP21 RX) at 115200 8N1
- *       * Non-blocking 0x57 0xAB frame parser (State 2 keyboard, relative mouse,
- *         status/version/disconnect frames) logged to UART0
+ *       * Non-blocking 0x57 0xAB frame parser (State 2 keyboard, relative mouse)
+ *   - SD Card Breakout: SPI0 (GP2 SCK, GP3 TX, GP4 RX, GP5 CS, GP6 CD)
+ *       * Debounced Card Detect plug/unplug events
+ *       * SPI init (CMD0/CMD8/ACMD41/CMD58/CMD9) + capacity printout
+ *       * Non-blocking 1 s rotating 512-byte block write/read/verify test
  */
 
 #include <stdbool.h>
@@ -27,6 +30,7 @@
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/pwm.h"
+#include "hardware/spi.h"
 #include "hardware/structs/bus_ctrl.h"
 #include "hardware/structs/hstx_ctrl.h"
 #include "hardware/structs/hstx_fifo.h"
@@ -36,6 +40,11 @@
 // Hardware pin assignments (see README.md)
 #define PIN_UART0_TX     0u   // UART0 TX (rp2350-datasheet.pdf §9.4, Table 677)
 #define PIN_UART0_RX     1u   // UART0 RX (rp2350-datasheet.pdf §9.4, Table 677)
+#define PIN_SD_SCK       2u   // SPI0 SCK (rp2350-datasheet.pdf §9.4, Table 677)
+#define PIN_SD_MOSI      3u   // SPI0 TX  (rp2350-datasheet.pdf §9.4, Table 677)
+#define PIN_SD_MISO      4u   // SPI0 RX  (rp2350-datasheet.pdf §9.4, Table 677)
+#define PIN_SD_CS        5u   // Software-controlled SIO CSn (see README.md)
+#define PIN_SD_CD        6u   // Mechanical Card Detect switch (active LOW)
 #define PIN_DVI_FIRST   12u   // GP12-GP19: HSTX (Function 0, Table 677)
 #define PIN_DVI_COUNT    8u
 #define PIN_UART1_TX    20u   // UART1 TX -> CH9350 RX (rp2350-datasheet.pdf §9.4, Table 677)
@@ -65,6 +74,20 @@
 #define CH9350_SYNC1            0x57u
 #define CH9350_SYNC2            0xABu
 #define CH9350_MAX_PAYLOAD      8u
+
+// SD Card SPI0 configuration (sd-physical-layer-simplified-spec.pdf §7)
+#define SPI_SD                  spi0
+#define SD_SPI_INIT_HZ          400000u     // 100-400 kHz required during init (§7.2.1)
+#define SD_SPI_RUN_HZ           12600000u   // 12.6 MHz = clk_peri / 10
+#define SD_BLOCK_SIZE           512u
+#define SD_TEST_LBA_BASE        1024u       // Rotating raw test ring: LBA 1024..1039
+#define SD_TEST_LBA_COUNT       16u
+#define SD_CD_DEBOUNCE_US       50000ull    // 50 ms mechanical switch debounce
+#define SD_POWERUP_SETTLE_US    100000ull   // 100 ms card power-up settle after insert
+#define SD_ACMD41_POLL_US       10000ull    // 10 ms between ACMD41 polls
+#define SD_ACMD41_TIMEOUT_US    1000000ull  // 1 s max init wait
+#define SD_WRITE_TIMEOUT_US     500000ull   // 500 ms max NAND program busy wait
+#define SD_TEST_INTERVAL_US     1000000ull  // 1 s between block write/read/verify tests
 
 // Scheduling intervals (microseconds, driven by 64-bit 1 MHz system timer)
 #define LED_STEP_INTERVAL_US     1000000ull  // 1 s
@@ -379,6 +402,19 @@ static void uart0_tx_enqueue_u32_dec(uint32_t value) {
     }
 }
 
+static void uart0_tx_enqueue_u64_dec(uint64_t value) {
+    char digits[20];
+    uint count = 0u;
+    do {
+        digits[count++] = (char)('0' + (value % 10ull));
+        value /= 10ull;
+    } while (value > 0ull);
+
+    while (count > 0u) {
+        uart0_tx_enqueue_byte((uint8_t)digits[--count]);
+    }
+}
+
 static void uart0_tx_enqueue_i32_dec(int32_t value) {
     if (value < 0) {
         uart0_tx_enqueue_byte('-');
@@ -440,8 +476,8 @@ static void uart0_rx_poll(void) {
 
 static void uart0_enqueue_boot_banner(void) {
     uart0_tx_enqueue_str("\r\n========================================\r\n");
-    uart0_tx_enqueue_str("Pico 2 Desert Island - Test Harness (1e)\r\n");
-    uart0_tx_enqueue_str("UART0: 115200 | DVI: 640x480 | CH9350: UART1\r\n");
+    uart0_tx_enqueue_str("Pico 2 Desert Island - Test Harness (1f)\r\n");
+    uart0_tx_enqueue_str("UART0 | DVI 640x480 | CH9350 | SD SPI0\r\n");
     uart0_tx_enqueue_str("========================================\r\n");
 }
 
@@ -724,6 +760,481 @@ static void ch9350_rx_poll(void) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SD Card Raw Block Device over SPI0 (sd-physical-layer-simplified-spec.pdf §7)
+// ---------------------------------------------------------------------------
+
+typedef enum {
+    SD_STATE_NO_CARD = 0,
+    SD_STATE_POWERUP_WAIT,
+    SD_STATE_ACMD41_POLL,
+    SD_STATE_READY,
+    SD_STATE_WRITE_BUSY,
+    SD_STATE_ERROR,
+} sd_state_t;
+
+static sd_state_t sd_state = SD_STATE_NO_CARD;
+static bool sd_cd_stable = false;       // Debounced card-inserted state (true = seated)
+static bool sd_cd_last_raw = false;
+static uint64_t sd_cd_change_us = 0ull;
+
+static bool sd_is_v2 = false;
+static bool sd_is_sdhc = false;         // CCS=1: block LBA addressing; CCS=0: byte addressing
+static uint64_t sd_total_blocks = 0ull;
+
+static uint64_t sd_timer_us = 0ull;
+static uint64_t sd_deadline_us = 0ull;
+static uint64_t sd_write_start_us = 0ull;
+static uint32_t sd_test_iter = 0u;
+static uint32_t sd_test_lba = SD_TEST_LBA_BASE;
+
+static uint8_t sd_tx_buf[SD_BLOCK_SIZE];
+static uint8_t sd_rx_buf[SD_BLOCK_SIZE];
+
+static inline void sd_cs_select(void) {
+    gpio_put(PIN_SD_CS, false);
+}
+
+static inline void sd_cs_deselect(void) {
+    gpio_put(PIN_SD_CS, true);
+}
+
+static uint8_t sd_spi_xfer(uint8_t out_byte) {
+    uint8_t in_byte = 0xFFu;
+    spi_write_read_blocking(SPI_SD, &out_byte, &in_byte, 1u);
+    return in_byte;
+}
+
+static void sd_deselect_and_clock(void) {
+    sd_cs_deselect();
+    sd_spi_xfer(0xFFu);  // 8 trailing clocks so the card releases DO (MISO)
+}
+
+// Send a 6-byte SPI SD command (CS must be asserted by caller) and return R1.
+static uint8_t sd_send_cmd(uint8_t cmd_idx, uint32_t arg, uint8_t crc) {
+    // Wait briefly for card DO to idle high (0xFF) before starting command
+    for (uint i = 0u; i < 64u; ++i) {
+        if (sd_spi_xfer(0xFFu) == 0xFFu) {
+            break;
+        }
+    }
+
+    uint8_t frame[6] = {
+        (uint8_t)(0x40u | (cmd_idx & 0x3Fu)),
+        (uint8_t)((arg >> 24u) & 0xFFu),
+        (uint8_t)((arg >> 16u) & 0xFFu),
+        (uint8_t)((arg >> 8u)  & 0xFFu),
+        (uint8_t)(arg & 0xFFu),
+        crc,
+    };
+    spi_write_blocking(SPI_SD, frame, 6u);
+
+    // Poll up to 16 bytes for R1 (MSB == 0)
+    uint8_t r1 = 0xFFu;
+    for (uint i = 0u; i < 16u; ++i) {
+        r1 = sd_spi_xfer(0xFFu);
+        if ((r1 & 0x80u) == 0u) {
+            break;
+        }
+    }
+    return r1;
+}
+
+// Read a data block preceded by token 0xFE into dst[len], then discard 2-byte CRC.
+static bool sd_read_data_packet(uint8_t *dst, uint len) {
+    uint8_t token = 0xFFu;
+    for (uint i = 0u; i < 50000u; ++i) {
+        token = sd_spi_xfer(0xFFu);
+        if (token != 0xFFu) {
+            break;
+        }
+    }
+    if (token != 0xFEu) {
+        return false;
+    }
+
+    spi_read_blocking(SPI_SD, 0xFFu, dst, len);
+    (void)sd_spi_xfer(0xFFu);  // CRC16 high byte
+    (void)sd_spi_xfer(0xFFu);  // CRC16 low byte
+    return true;
+}
+
+// Parse 16-byte CSD register (sd-physical-layer-simplified-spec.pdf §5.3.2-§5.3.3, pp. 184-191)
+static bool sd_read_capacity_csd(uint64_t *out_blocks) {
+    uint8_t csd[16];
+    sd_cs_select();
+    uint8_t r1 = sd_send_cmd(9u, 0u, 0xFFu);  // CMD9: SEND_CSD
+    bool ok = (r1 == 0x00u) && sd_read_data_packet(csd, sizeof(csd));
+    sd_deselect_and_clock();
+    if (!ok) {
+        return false;
+    }
+
+    uint8_t csd_structure = (uint8_t)((csd[0] >> 6u) & 0x03u);
+    if (csd_structure == 1u) {
+        // CSD Version 2.0 (SDHC / SDXC, Table 5-16, p. 189):
+        //   C_SIZE = bits [69:48], capacity = (C_SIZE + 1) * 512 KiB = (C_SIZE + 1) * 1024 blocks
+        uint32_t c_size = ((uint32_t)(csd[7] & 0x3Fu) << 16u) |
+                          ((uint32_t)csd[8] << 8u) |
+                          (uint32_t)csd[9];
+        *out_blocks = ((uint64_t)c_size + 1ull) * 1024ull;
+        return true;
+    } else if (csd_structure == 0u) {
+        // CSD Version 1.0 (SDSC, §5.3.2, pp. 184-186):
+        //   capacity = (C_SIZE + 1) * 2^(C_SIZE_MULT + 2) * 2^(READ_BL_LEN)
+        uint32_t read_bl_len = (uint32_t)(csd[5] & 0x0Fu);
+        uint32_t c_size = ((uint32_t)(csd[6] & 0x03u) << 10u) |
+                          ((uint32_t)csd[7] << 2u) |
+                          ((uint32_t)(csd[8] >> 6u) & 0x03u);
+        uint32_t c_size_mult = ((uint32_t)(csd[9] & 0x03u) << 1u) |
+                               ((uint32_t)(csd[10] >> 7u) & 0x01u);
+        uint64_t total_bytes = ((uint64_t)c_size + 1ull) << (c_size_mult + 2u + read_bl_len);
+        *out_blocks = total_bytes >> 9u;  // Divide by 512 bytes/block
+        return true;
+    }
+    return false;
+}
+
+static void sd_log_init_error(const char *stage, uint8_t r1) {
+    uart0_tx_enqueue_str("[SD] Init failed at ");
+    uart0_tx_enqueue_str(stage);
+    uart0_tx_enqueue_str(" (R1=0x");
+    uart0_tx_enqueue_u8_hex(r1);
+    uart0_tx_enqueue_str(")\r\n");
+}
+
+static void sd_start_init_sequence(uint64_t now_us) {
+    spi_set_baudrate(SPI_SD, SD_SPI_INIT_HZ);
+    sd_cs_deselect();
+
+    // Step 1: >= 74 clock pulses with CS high and MOSI high (send 10 bytes of 0xFF)
+    for (uint i = 0u; i < 10u; ++i) {
+        sd_spi_xfer(0xFFu);
+    }
+
+    // Step 2: CMD0 (GO_IDLE_STATE, CRC=0x95) -> enter SPI idle state (R1=0x01)
+    uint8_t r1 = 0xFFu;
+    for (uint attempt = 0u; attempt < 8u; ++attempt) {
+        sd_cs_select();
+        r1 = sd_send_cmd(0u, 0u, 0x95u);
+        sd_deselect_and_clock();
+        if (r1 == 0x01u) {
+            break;
+        }
+    }
+    if (r1 != 0x01u) {
+        sd_log_init_error("CMD0", r1);
+        sd_state = SD_STATE_ERROR;
+        return;
+    }
+
+    // Step 3: CMD8 (SEND_IF_COND, 2.7-3.6V, check=0xAA, CRC=0x87)
+    sd_cs_select();
+    r1 = sd_send_cmd(8u, 0x000001AAu, 0x87u);
+    uint8_t r7[4] = {0u, 0u, 0u, 0u};
+    if (r1 == 0x01u) {
+        for (uint i = 0u; i < 4u; ++i) {
+            r7[i] = sd_spi_xfer(0xFFu);
+        }
+    }
+    sd_deselect_and_clock();
+
+    if (r1 == 0x01u) {
+        if ((r7[2] & 0x0Fu) != 0x01u || r7[3] != 0xAAu) {
+            sd_log_init_error("CMD8 check pattern", r7[3]);
+            sd_state = SD_STATE_ERROR;
+            return;
+        }
+        sd_is_v2 = true;
+    } else if (r1 == 0x05u) {
+        // Legacy SD v1.x card (CMD8 illegal)
+        sd_is_v2 = false;
+    } else {
+        sd_log_init_error("CMD8", r1);
+        sd_state = SD_STATE_ERROR;
+        return;
+    }
+
+    // Step 4: Non-blocking ACMD41 polling until card leaves idle state (R1 == 0x00)
+    sd_timer_us = now_us;
+    sd_deadline_us = now_us + SD_ACMD41_TIMEOUT_US;
+    sd_state = SD_STATE_ACMD41_POLL;
+}
+
+static void sd_finish_init_sequence(uint64_t now_us) {
+    // Step 5: CMD58 (READ_OCR) to inspect CCS bit (bit 30)
+    sd_cs_select();
+    uint8_t r1 = sd_send_cmd(58u, 0u, 0xFFu);
+    uint8_t ocr[4] = {0u, 0u, 0u, 0u};
+    if (r1 == 0x00u) {
+        for (uint i = 0u; i < 4u; ++i) {
+            ocr[i] = sd_spi_xfer(0xFFu);
+        }
+    }
+    sd_deselect_and_clock();
+
+    if (r1 != 0x00u) {
+        sd_log_init_error("CMD58", r1);
+        sd_state = SD_STATE_ERROR;
+        return;
+    }
+    sd_is_sdhc = sd_is_v2 && ((ocr[0] & 0x40u) != 0u);
+
+    // For SDSC cards (CCS=0), explicitly set 512-byte block length via CMD16
+    if (!sd_is_sdhc) {
+        sd_cs_select();
+        r1 = sd_send_cmd(16u, SD_BLOCK_SIZE, 0xFFu);
+        sd_deselect_and_clock();
+        if (r1 != 0x00u) {
+            sd_log_init_error("CMD16", r1);
+            sd_state = SD_STATE_ERROR;
+            return;
+        }
+    }
+
+    // Step 6: Switch SPI0 to high-speed operation (12.6 MHz)
+    uint actual_hz = spi_set_baudrate(SPI_SD, SD_SPI_RUN_HZ);
+
+    // Read card capacity from CSD register (CMD9)
+    sd_total_blocks = 0ull;
+    bool have_csd = sd_read_capacity_csd(&sd_total_blocks);
+
+    uart0_tx_enqueue_str("[SD] Ready: ");
+    uart0_tx_enqueue_str(sd_is_sdhc ? "SDHC/SDXC" : "SDSC");
+    if (have_csd) {
+        uart0_tx_enqueue_str(", ");
+        uart0_tx_enqueue_u64_dec(sd_total_blocks);
+        uart0_tx_enqueue_str(" blocks (");
+        uart0_tx_enqueue_u64_dec(sd_total_blocks / 2048ull);
+        uart0_tx_enqueue_str(" MiB)");
+    } else {
+        uart0_tx_enqueue_str(", capacity unknown (CMD9 failed)");
+    }
+    uart0_tx_enqueue_str(", SPI0=");
+    uart0_tx_enqueue_u32_dec(actual_hz / 1000000u);
+    uart0_tx_enqueue_byte('.');
+    uart0_tx_enqueue_u32_dec((actual_hz % 1000000u) / 100000u);
+    uart0_tx_enqueue_str(" MHz\r\n");
+
+    sd_test_iter = 0u;
+    sd_test_lba = SD_TEST_LBA_BASE;
+    sd_timer_us = now_us + SD_TEST_INTERVAL_US;
+    sd_state = SD_STATE_READY;
+}
+
+static bool sd_begin_block_write(uint32_t lba, uint32_t iter, uint64_t now_us) {
+    // Fill 512-byte deterministic test pattern unique to (lba, iter)
+    for (uint i = 0u; i < SD_BLOCK_SIZE; ++i) {
+        sd_tx_buf[i] = (uint8_t)((i ^ lba ^ (iter * 37u) ^ 0xA5u) & 0xFFu);
+    }
+
+    uint32_t addr = sd_is_sdhc ? lba : (lba * SD_BLOCK_SIZE);
+    sd_cs_select();
+    uint8_t r1 = sd_send_cmd(24u, addr, 0xFFu);  // CMD24: WRITE_BLOCK
+    if (r1 != 0x00u) {
+        sd_deselect_and_clock();
+        uart0_tx_enqueue_str("[SD] WRITE LBA ");
+        uart0_tx_enqueue_u32_dec(lba);
+        uart0_tx_enqueue_str(" FAIL (CMD24 R1=0x");
+        uart0_tx_enqueue_u8_hex(r1);
+        uart0_tx_enqueue_str(")\r\n");
+        return false;
+    }
+
+    // Send 1 dummy byte, 0xFE start-block token, 512 data bytes, 2 dummy CRC bytes
+    sd_spi_xfer(0xFFu);
+    sd_spi_xfer(0xFEu);
+    spi_write_blocking(SPI_SD, sd_tx_buf, SD_BLOCK_SIZE);
+    sd_spi_xfer(0xFFu);
+    sd_spi_xfer(0xFFu);
+
+    // Data response token: xxx0_0101 (0x05) = Data Accepted
+    uint8_t resp = sd_spi_xfer(0xFFu);
+    if ((resp & 0x1Fu) != 0x05u) {
+        sd_deselect_and_clock();
+        uart0_tx_enqueue_str("[SD] WRITE LBA ");
+        uart0_tx_enqueue_u32_dec(lba);
+        uart0_tx_enqueue_str(" FAIL (data resp=0x");
+        uart0_tx_enqueue_u8_hex(resp);
+        uart0_tx_enqueue_str(")\r\n");
+        return false;
+    }
+
+    // Keep CS asserted and poll non-blockingly in SD_STATE_WRITE_BUSY until DO != 0x00
+    sd_write_start_us = now_us;
+    sd_deadline_us = now_us + SD_WRITE_TIMEOUT_US;
+    return true;
+}
+
+static void sd_read_and_verify_block(uint32_t lba, uint32_t iter, uint32_t write_ms) {
+    uint32_t addr = sd_is_sdhc ? lba : (lba * SD_BLOCK_SIZE);
+    sd_cs_select();
+    uint8_t r1 = sd_send_cmd(17u, addr, 0xFFu);  // CMD17: READ_SINGLE_BLOCK
+    bool ok = (r1 == 0x00u) && sd_read_data_packet(sd_rx_buf, SD_BLOCK_SIZE);
+    sd_deselect_and_clock();
+
+    if (!ok) {
+        uart0_tx_enqueue_str("[SD] READ LBA ");
+        uart0_tx_enqueue_u32_dec(lba);
+        uart0_tx_enqueue_str(" FAIL (CMD17 R1=0x");
+        uart0_tx_enqueue_u8_hex(r1);
+        uart0_tx_enqueue_str(")\r\n");
+        return;
+    }
+
+    for (uint i = 0u; i < SD_BLOCK_SIZE; ++i) {
+        if (sd_rx_buf[i] != sd_tx_buf[i]) {
+            uart0_tx_enqueue_str("[SD] VERIFY LBA ");
+            uart0_tx_enqueue_u32_dec(lba);
+            uart0_tx_enqueue_str(" #");
+            uart0_tx_enqueue_u32_dec(iter);
+            uart0_tx_enqueue_str(" FAIL at byte ");
+            uart0_tx_enqueue_u32_dec(i);
+            uart0_tx_enqueue_str(" (wrote 0x");
+            uart0_tx_enqueue_u8_hex(sd_tx_buf[i]);
+            uart0_tx_enqueue_str(", read 0x");
+            uart0_tx_enqueue_u8_hex(sd_rx_buf[i]);
+            uart0_tx_enqueue_str(")\r\n");
+            return;
+        }
+    }
+
+    uart0_tx_enqueue_str("[SD] Block ");
+    uart0_tx_enqueue_u32_dec(lba);
+    uart0_tx_enqueue_str(" #");
+    uart0_tx_enqueue_u32_dec(iter);
+    uart0_tx_enqueue_str(" write+read+verify: PASS (512/512 B, wr=");
+    uart0_tx_enqueue_u32_dec(write_ms);
+    uart0_tx_enqueue_str(" ms)\r\n");
+}
+
+static void sd_spi_init(uint64_t now_us) {
+    spi_init(SPI_SD, SD_SPI_INIT_HZ);
+    spi_set_format(SPI_SD, 8u, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+
+    // Route GP2=SCK, GP3=TX(MOSI), GP4=RX(MISO) to SPI0 (Function 1)
+    gpio_set_function(PIN_SD_SCK, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_SD_MOSI, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_SD_MISO, GPIO_FUNC_SPI);
+    gpio_pull_up(PIN_SD_MISO);  // Prevent MISO floating while card is tri-stated
+
+    // GP5 = manual SIO Chip Select (active LOW, idle HIGH)
+    gpio_init(PIN_SD_CS);
+    gpio_set_dir(PIN_SD_CS, GPIO_OUT);
+    sd_cs_deselect();
+
+    // GP6 = Card Detect switch (active-LOW to grounded shield, internal pull-up)
+    gpio_init(PIN_SD_CD);
+    gpio_set_dir(PIN_SD_CD, GPIO_IN);
+    gpio_pull_up(PIN_SD_CD);
+    busy_wait_us_32(100u);  // Let pad capacitance charge from reset pull-down before boot sample
+
+    // Sample initial Card Detect state at boot
+    sd_cd_stable = !gpio_get(PIN_SD_CD);
+    sd_cd_last_raw = sd_cd_stable;
+    sd_cd_change_us = now_us;
+
+    if (sd_cd_stable) {
+        uart0_tx_enqueue_str("[SD] Card detected on startup\r\n");
+        sd_timer_us = now_us + SD_POWERUP_SETTLE_US;
+        sd_state = SD_STATE_POWERUP_WAIT;
+    } else {
+        uart0_tx_enqueue_str("[SD] No card detected (insert SD card to test)\r\n");
+        sd_state = SD_STATE_NO_CARD;
+    }
+}
+
+static void sd_poll(uint64_t now_us) {
+    // 1. Debounce mechanical Card Detect switch on GP6 (LOW = card seated)
+    bool raw_inserted = !gpio_get(PIN_SD_CD);
+    if (raw_inserted != sd_cd_last_raw) {
+        sd_cd_last_raw = raw_inserted;
+        sd_cd_change_us = now_us;
+    } else if (raw_inserted != sd_cd_stable && (now_us - sd_cd_change_us) >= SD_CD_DEBOUNCE_US) {
+        sd_cd_stable = raw_inserted;
+        if (sd_cd_stable) {
+            uart0_tx_enqueue_str("[SD] Card inserted\r\n");
+            sd_timer_us = now_us + SD_POWERUP_SETTLE_US;
+            sd_state = SD_STATE_POWERUP_WAIT;
+        } else {
+            sd_cs_deselect();
+            spi_set_baudrate(SPI_SD, SD_SPI_INIT_HZ);
+            sd_total_blocks = 0ull;
+            sd_state = SD_STATE_NO_CARD;
+            uart0_tx_enqueue_str("[SD] Card removed\r\n");
+        }
+    }
+
+    // 2. Advance non-blocking SD card state machine
+    switch (sd_state) {
+        case SD_STATE_NO_CARD:
+        case SD_STATE_ERROR:
+            break;
+
+        case SD_STATE_POWERUP_WAIT:
+            if (now_us >= sd_timer_us) {
+                sd_start_init_sequence(now_us);
+            }
+            break;
+
+        case SD_STATE_ACMD41_POLL:
+            if (now_us >= sd_timer_us) {
+                sd_cs_select();
+                uint8_t r1 = sd_send_cmd(55u, 0u, 0xFFu);  // CMD55: APP_CMD
+                sd_deselect_and_clock();
+
+                if (r1 <= 0x01u) {
+                    sd_cs_select();
+                    r1 = sd_send_cmd(41u, sd_is_v2 ? 0x40000000u : 0u, 0xFFu);
+                    sd_deselect_and_clock();
+                }
+
+                if (r1 == 0x00u) {
+                    sd_finish_init_sequence(now_us);
+                } else if (now_us >= sd_deadline_us) {
+                    sd_log_init_error("ACMD41 timeout", r1);
+                    sd_state = SD_STATE_ERROR;
+                } else {
+                    sd_timer_us = now_us + SD_ACMD41_POLL_US;
+                }
+            }
+            break;
+
+        case SD_STATE_READY:
+            if (now_us >= sd_timer_us) {
+                sd_test_iter++;
+                if (sd_begin_block_write(sd_test_lba, sd_test_iter, now_us)) {
+                    sd_state = SD_STATE_WRITE_BUSY;
+                } else {
+                    sd_timer_us = now_us + SD_TEST_INTERVAL_US;
+                }
+            }
+            break;
+
+        case SD_STATE_WRITE_BUSY:
+            // Card holds MISO LOW (0x00) while programming NAND; returns 0xFF when done
+            if (sd_spi_xfer(0xFFu) != 0x00u) {
+                uint32_t write_ms = (uint32_t)((now_us - sd_write_start_us) / 1000ull);
+                sd_deselect_and_clock();
+                sd_read_and_verify_block(sd_test_lba, sd_test_iter, write_ms);
+
+                // Advance rotating test block ring (LBA 1024..1039)
+                sd_test_lba = SD_TEST_LBA_BASE +
+                              (((sd_test_lba - SD_TEST_LBA_BASE) + 1u) % SD_TEST_LBA_COUNT);
+                sd_timer_us = now_us + SD_TEST_INTERVAL_US;
+                sd_state = SD_STATE_READY;
+            } else if (now_us >= sd_deadline_us) {
+                sd_deselect_and_clock();
+                uart0_tx_enqueue_str("[SD] WRITE LBA ");
+                uart0_tx_enqueue_u32_dec(sd_test_lba);
+                uart0_tx_enqueue_str(" FAIL (busy timeout)\r\n");
+                sd_timer_us = now_us + SD_TEST_INTERVAL_US;
+                sd_state = SD_STATE_READY;
+            }
+            break;
+    }
+}
+
 static void uart0_enqueue_heartbeat(uint32_t counter, uint32_t uptime_s) {
     uart0_tx_enqueue_str("Heartbeat #");
     uart0_tx_enqueue_u32_dec(counter);
@@ -792,6 +1303,9 @@ int main(void) {
     // Free-running 64-bit microsecond hardware timer (TIMER0)
     uint64_t now_us = time_us_64();
 
+    // Initialize SPI0 and check Card Detect (GP6) after banner is queued
+    sd_spi_init(now_us);
+
     // Start immediately on Red LED and schedule next step in 1 s
     uint led_index = 0;
     leds_set_active(led_index);
@@ -845,10 +1359,13 @@ int main(void) {
         // Task 5: Poll UART1 (CH9350) for framed 0x57 0xAB HID packets
         ch9350_rx_poll();
 
+        // Task 6: Poll SD card (Card Detect, non-blocking init, 1 s block test)
+        sd_poll(now_us);
+
         // Drain software TX ring buffer into UART0 hardware TX FIFO
         uart0_tx_poll();
 
-        // Task 6: Glide 32x32 XOR box across the 20x15 grid and bounce off border
+        // Task 7: Glide 32x32 XOR box across the 20x15 grid and bounce off border
         if (now_us >= next_video_step_us) {
             fb_xor_box(box_x, box_y);
 

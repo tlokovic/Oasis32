@@ -11,6 +11,7 @@ target_link_libraries(test_harness_cpp
     pico_stdlib
     hardware_dma
     hardware_pwm
+    hardware_spi
     hardware_uart
 )
 

@@ -151,11 +151,12 @@ This is accessed via SPI, and uses the following connections:
 | Pin 6 / GP4 / SPI0 RX | D0 |
 | Pin 7 / GP5 / SPI0 CSn | D3 |
 | Pin 9 / GP6 | CD |
+| GND | Shield / Mounting Hole *(jumpered to GD on BRK-SD v2.0)* |
 
 #### Programming notes (From AI, unverified)
 
 * **GPIO Multiplexing (Manual `CS` Control):** Set `GP2` (`SCK`), `GP3` (`TX`/MOSI), and `GP4` (`RX`/MISO) `FUNCSEL` to `SPI` (Function 1) in `IO_BANK0`. **Configure `GP5` (`CSn`) as a software-controlled GPIO (`SIO`, Function 5) rather than hardware `SPI0 CSn`:** the RP2350's PL022 SPI controller automatically pulses hardware `CSn` high between every 8-bit byte in Motorola SPI mode, which breaks multi-byte SD card commands and 512-byte block transfers, and prevents sending the mandatory initial dummy clocks with `CS` held high.
-* **Pull-ups & Card Detect (`GP6`):** Clear `ISO` on `GP2–GP6` in `PADS_BANK0`. Enable input (`IE`) and the internal pull-up (`PUE`) on `GP4` (`D0`/MISO) so the line does not float while the SD card's output stage is tri-stated prior to entering SPI mode. Configure `GP6` (`CD`) as an `SIO` input with an internal pull-up so software can check whether a card is physically seated.
+* **Pull-ups & Card Detect (`GP6`):** Clear `ISO` on `GP2–GP6` in `PADS_BANK0`. Enable input (`IE`) and the internal pull-up (`PUE`) on `GP4` (`D0`/MISO) so the line does not float while the SD card's output stage is tri-stated prior to entering SPI mode. On the Saiko Systems **BRK-SD v2.0** breakout, the `CD` switch closes to the connector shield (accessible via the plated mounting holes, which are not internally tied to `GD`), so jumper a mounting hole to `GD` (`GND`) and configure `GP6` (`CD`) as an `SIO` input with an internal **pull-up (`PUE = 1, PDE = 0`)**—active-LOW (`0` when a card is seated, `1` when empty), which also avoids `RP2350-E9` pull-down latching. Allow a brief settle delay (~100 µs) after enabling `PUE` before sampling `GP6` at boot.
 * **SPI0 Frame Format:** Deassert `SPI0` in `RESETS`. Configure the PL022 registers (`SSPCR0`, `SSPCR1`) for Motorola SPI format (`FRF = 0`), SPI Mode 0 (`SPO = 0`, `SPH = 0`: clock idles low, data sampled on rising edge), 8-bit frame width (`DSS = 0b0111`), and master mode (`MS = 0`).
 * **Two-Speed Clocking & Initialization Sequence:** SD specifications require the SPI clock (`SSPCLKOUT`, set via `SSPCPSR` and `SSPCR0.SCR`) to stay between **100 kHz and 400 kHz** during initialization. Software must:
   1. Hold `GP5` (`CS`) high and transmit at least 74 clock pulses (send 10+ bytes of `0xFF`) while keeping `MOSI` high.
