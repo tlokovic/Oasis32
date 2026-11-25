@@ -1,4 +1,4 @@
-# Oasis32 Development Plan
+# Oasis32 Development Roadmap
 
 ## Project Overview
 
@@ -12,7 +12,7 @@ The roadmap is divided into four sequential phases:
 
 ---
 
-## Phase 1: Test Hardware with Pico C++ SDK
+## Phase 1 (COMPLETE): Test Hardware with Pico C++ SDK
 
 The goal of this phase is to confirm that the hardware is functioning and electrically sound. To eliminate ambiguous faults (distinguishing bad solder joints from register or compiler bugs), all hardware bring-up is conducted in C++ using the official Raspberry Pi Pico SDK (but no other libraries).
 
@@ -37,7 +37,7 @@ On startup, the test harness enters a **non-blocking cooperative polling loop** 
 * **Strictly Non-Blocking Runtime:** The main loop must never use `sleep_ms()` or blocking busy-waits. Short, bounded waits are restricted strictly to one-time boot initialization (e.g., crystal oscillator lock, SD card power-up handshake).
 * **Progressive Reduction:** Where helpful, high-level SDK helper routines may be progressively refactored down to direct hardware register operations (`sio_hw`, `uart0_hw`, etc.) to serve as direct blueprints for Phase 2.
 
-### Sub-Phase 1a: Host-Side Tools & Baseline C++ Blink
+### Sub-Phase 1a (COMPLETE): Host-Side Tools & Baseline C++ Blink
 
 #### Hardware
 Bare, unmodified Raspberry Pi Pico 2 (using the onboard LED on `GPIO25`).
@@ -58,7 +58,7 @@ Solder the status LEDs (Red, Green, Blue), Piezo buzzer, and momentary reset but
 * Add the once-every-3-seconds 100 ms @ 1 kHz piezo beep (driven via PWM or timer-toggled GPIO).
 * Verify that pressing the reset button cleanly restarts the sequence (and enters `BOOTSEL` mode when held with `BOOTSEL`).
 
-### Sub-Phase 1c: Solder Serial Port (CP2102N Debug Port)
+### Sub-Phase 1c (COMPLETE): Solder Serial Port (CP2102N Debug Port)
 
 #### Hardware
 Solder the CP2102N USB-to-UART bridge (`UART0`, `GP0` TX, `GP1` RX).
@@ -69,7 +69,7 @@ Solder the CP2102N USB-to-UART bridge (`UART0`, `GP0` TX, `GP1` RX).
 * Add the once-per-second status/heartbeat message to the main loop.
 * Poll `UART0` on every main loop iteration and immediately echo any received characters back to the host terminal. Rather than printing the characters raw, it should print a separate line with "Serial character received:" with decimal, hex, and binary representations of the character.
 
-### Sub-Phase 1d: Solder Display (DVI Sock)
+### Sub-Phase 1d (COMPLETE): Solder Display (DVI Sock)
 
 #### Hardware
 Solder the Adafruit DVI Sock (`GP12–GP19`).
@@ -79,7 +79,7 @@ Solder the Adafruit DVI Sock (`GP12–GP19`).
 * Configure `PLL_SYS` / `CLK_HSTX`, the `HSTX` serializer/crossbar, and DMA channels to stream out 640×480 @ 60 Hz video.
 * Render a static 1-pixel outer border `(0,0)–(639,479)` with a word-aligned `20×15` (`32×32` px) grid, and in the non-blocking main loop animate a `32×32` XOR box bouncing off the border (~60 px/s) without interrupting LED or UART tasks.
 
-### Sub-Phase 1e: Solder Keyboard/Mouse Host (CH9350)
+### Sub-Phase 1e (COMPLETE): Solder Keyboard/Mouse Host (CH9350)
 
 #### Hardware
 Solder the CH9350 Dual USB Host-to-UART module (`UART1`, `GP20` RX, `GP21` TX) and set hardware DIP switches to Lower Computer Mode, 115200 Baud, State 2.
@@ -101,7 +101,7 @@ Solder the SD card breakout (`SPI0`, `GP2–GP6`).
 
 ---
 
-## Phase 2: Port Test Harness to RISC-V Assembly
+## Phase 2 (COMPLETE): Port Test Harness to RISC-V Assembly
 
 With physical hardware integrity proven and frozen, the entire test harness is ported to pure bare-metal RISC-V assembly in `test_harness/asm/`. The assembly version reproduces the exact same concurrent polling behavior as the C++ harness, proving full bare-metal control of all peripherals without any linked libraries or third-party code.
 
@@ -117,9 +117,9 @@ With physical hardware integrity proven and frozen, the entire test harness is p
 
 ---
 
-## Phase 3: System ROM / BIOS & Bootloader
+## Phase 3 (IN PROGRESS): System ROM / BIOS & Bootloader
 
-With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permanent, Flash-resident **Stage-1 System ROM (BIOS & Bootloader)** described in `ARCHITECTURE.md`. Rather than modifying `test_harness/asm/` (which remains preserved as a standalone Phase 2 reference), Phase 3 learns from it to establish a clean, modular multi-file architecture and the representational foundation that will support both BIOS and SD-card development.
+With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permanent, Flash-resident **Stage-1 System ROM (BIOS & Bootloader)** described in `docs/Architecture.md`. Rather than modifying `test_harness/asm/` (which remains preserved as a standalone Phase 2 reference), Phase 3 learns from it to establish a clean, modular multi-file architecture and the representational foundation that will support both BIOS and SD-card development.
 
 ### Architectural Constraints
 * **Zero Linked SDK / Runtime:** Pure bare-metal RISC-V assembly (`-nostdlib -nostartfiles -nodefaultlibs`).
@@ -127,7 +127,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * **Single Source of Truth:** Shared constants use pure `#define` headers (`.h`) consumed by both `.S` sources and preprocessed `.ld.S` linker script templates via a shared `cmake/oasis32.cmake` helper.
 
 ### Sub-Phase 3a: Architectural Decisions & Representational Foundation
-* Resolve the open System ROM design decisions in `ARCHITECTURE.md §6` (ROM ABI calling mechanism, LBA 0 Boot Image Header binary layout, no-card/invalid-disk fallback behavior, and host-to-SD-card development transfer workflow).
+* Resolve the open System ROM design decisions in `docs/Architecture.md §6` (ROM ABI calling mechanism, LBA 0 Boot Image Header binary layout, no-card/invalid-disk fallback behavior, and host-to-SD-card development transfer workflow).
 * Create `cmake/oasis32.cmake` with the `oasis32_abi` interface target, `.ld.S` preprocessing helper (using `gcc -E -P -x c` with `DEPFILE` tracking), and bare-metal disk target helper.
 * Author the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
 * Author the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
@@ -146,7 +146,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the LBA 0 Boot Image Header, load payload sectors into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
 * Verify the complete boot chain with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
 
-### Phase 3 Deliverable: Oasis32 Programmer's Reference (`PROGRAMMERS_REFERENCE.md`)
+### Phase 3 Deliverable: Oasis32 Programmer's Reference (`docs/Programmers Reference.md`)
 Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep with `include/abi/`, this manual serves as the authoritative, self-contained specification for programming Oasis32 (in the spirit of the *Commodore 64 Programmer's Reference Guide*).
 
 * **Core Boundary Principle:** Defines everything an Oasis32 programmer needs—and is allowed—to know. The underlying RP2350, Pico 2, Hazard3, CH9350, CP2102N, and SD SPI hardware are treated strictly as hidden implementation details. The manual must **never** reference overly permissive vendor hardware datasheets or "slice" the RP2350 datasheet; if a raw RP2350 register ever needs to be mentioned, that signals a missing or leaking BIOS abstraction.

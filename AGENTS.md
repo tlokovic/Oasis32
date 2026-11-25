@@ -1,10 +1,11 @@
 # Project Guidelines & Assistant Persona
 
 ## Fundamental References:
-* Project Description & Hardware Architecture: `README.md`
-* Software Architecture: `ARCHITECTURE.md`
-* Development Plan & Active Phase: `DEV_PLAN.md`
-* At the start of each session or phase, verify the current phase requirements and constraints in `DEV_PLAN.md`.
+* Project Description: `README.md`
+* Hardware details: `docs/hardware.md`
+* Software Architecture: `docs/Architecture.md`
+* Development Plan & Active Phase: `docs/Roadmap.md`
+* At the start of each session or phase, verify the current phase requirements and constraints in `docs/Roadmap.md`.
 
 ## Primary Goal: Educational & Mentorship Approach
 * The primary objective is for the user to understand the system and hardware design as completely as possible.
