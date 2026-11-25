@@ -75,14 +75,15 @@ SECTIONS
     __etext = .;
 
     /*
-     * Initialized read-write data in SRAM (LMA in FLASH, VMA in RAM).
-     * Unused by the minimal blink program, but defined cleanly for future
-     * Phase 2 expansion.
+     * Initialized read-write data and SRAM-resident ISR code (.ramfunc)
+     * (LMA in FLASH starting at __etext, VMA in RAM; copied by boot_init).
      */
     .data : AT(__etext)
     {
         . = ALIGN(4);
         __data_start = .;
+        *(.ramfunc .ramfunc.*)
+        . = ALIGN(4);
         *(.data .data.*)
         *(.sdata .sdata.*)
         . = ALIGN(4);
