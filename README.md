@@ -22,6 +22,7 @@ The result is a well-documented foundation that can be programmed from the groun
 *  For boot behavior, see [Booting Behavior](docs/BootBehavior.md).
 *  For execution, interrupt, and `ecall` ABI design, see [Execution Model](docs/ExecutionModel.md).
 *  For the Core 1 Video Coprocessor, framebuffer, and text overlay design, see [Video Architecture](docs/VideoArchitecture.md).
+*  For the internal Flash and 520 KB SRAM layout, see [Memory Map](docs/MemoryMap.md).
 
 ## Development Status
 
