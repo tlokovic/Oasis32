@@ -19,4 +19,5 @@ The result is a well-documented foundation that can be programmed from the groun
 ## Documentation
 
 *  For hardware details, see [Hardware](docs/hardware.md).
+*  For software architecture details, see [Hardware](docs/hardware.md).
 *  For roadmap and status, see [Roadmap](docs/roadmap.md).
