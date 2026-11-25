@@ -15,10 +15,10 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
 
 ## Features
 
-* **Bare-Metal 32-Bit RISC-V Architecture:** Powered by an RP2350 Hazard3 RISC-V core at 126 MHz with **464 KB of contiguous User SRAM** (plus 44 KB of directly accessible video memory), running in a flat, transparent single-core execution model with zero third-party SDKs, drivers, or libraries.
+* **Bare-Metal 32-Bit RISC-V Architecture:** Powered by an RP2350 Hazard3 RISC-V core at 126 MHz with **464 KB of contiguous User SRAM** (plus **48 KB** of directly accessible video memory = 512 KB total public Main SRAM), running in a flat, transparent single-core execution model with zero third-party SDKs, drivers, or libraries.
 * **640×480 @ 60 Hz Monochrome HDMI Display (Dedicated Video Coprocessor):**
   * RP2350 Core 1 acts as a permanent, hidden **Video Coprocessor (PPU/CRTC)** driving HSTX DVI output with **0% video overhead** on the main CPU.
-  * **Unified Graphics + Text Overlay (No Mode Switching):** Combines a `640×480` 1 bpp monochrome framebuffer (`38.4 KB`) with an `80×60` character text buffer (`4.8 KB`) and a **user-modifiable 256-glyph `8×8` font in RAM** (`2 KB`), composited live on every scanline via bitwise `OR`. Zeroing the text buffer yields pure graphics; zeroing the framebuffer yields pure 80×60 text; using both gives a non-destructive text overlay.
+  * **Unified Graphics + Text Overlay (No Mode Switching):** Combines a `640×480` 1 bpp monochrome framebuffer (`38,400 B`) with an `80×60` character text buffer (`4,800 B`) and a **user-modifiable 256-glyph `8×8` font in RAM** (`2,048 B`), composited live on every scanline via bitwise `OR`. Zeroing the text buffer yields pure graphics; zeroing the framebuffer yields pure 80×60 text; using both gives a non-destructive text overlay.
   * **Hardware Sprite Engine:** **32 simultaneous masked `16×16` sprites** backed by **56 animation/tile patterns** in video RAM (with Sprite 0 conventionally serving as a floating hardware mouse cursor), supporting transparency masks, H/V flip, above/below-text layering, and frame-latched or dynamic raster updates with zero per-scanline flicker.
 * **Permanent System ROM (BIOS) & Stable `ecall` Syscall ABI:**
   * Flash-resident BIOS isolates hardware details behind clean RISC-V `ecall` syscalls, giving disk-loaded software simple, address-independent access to:
@@ -39,7 +39,7 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
 *  For boot behavior, see [Booting Behavior](docs/BootBehavior.md).
 *  For execution, interrupt, and `ecall` ABI design, see [Execution Model](docs/ExecutionModel.md).
 *  For the Core 1 Video Coprocessor, framebuffer, and text overlay design, see [Video Architecture](docs/VideoArchitecture.md).
-*  For the internal Flash and 520 KB SRAM layout, see [Memory Map](docs/MemoryMap.md).
+*  For the internal Flash and RAM layout, see [Memory Map](docs/MemoryMap.md).
 
 ## Development Status
 

@@ -45,7 +45,7 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
             │   0x2007_F0C0–0x2007_F0FF  VIDEO_CTRL (64 B)                 │
             │   0x2007_DE00–0x2007_F0BF  TEXT_BUF   (80×60 = 4,800 B)      │
             │   0x2007_D600–0x2007_DDFF  FONT_RAM   (256×8 = 2,048 B)      │
-            │   0x2007_4000–0x2007_D5FF  FRAMEBUF   (640×480 1bpp = 38.4KB)│
+            │   0x2007_4000–0x2007_D5FF  FRAMEBUF   (640×480 = 38,400 B)   │
 0x2007_4000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_STACK_TOP
             │                                                              │
             │  User SRAM — PUBLIC ABI (464 KB = 475,136 bytes = 0x74000)   │
