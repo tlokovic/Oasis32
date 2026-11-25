@@ -1,7 +1,6 @@
 # Oasis32 — RISC-V Fantasy Retro Computer
 
 ![Assembled Left Side](images/assembled_left_side.jpg)
-![Assembled Left Side](images/assembled_right_side.jpg)
 
 ## Overview
 
