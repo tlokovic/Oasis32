@@ -2,6 +2,7 @@
 
 ## Fundamental References:
 * Project Description & Hardware Architecture: `README.md`
+* Software Architecture: `ARCHITECTURE.md`
 * Development Plan & Active Phase: `DEV_PLAN.md`
 * At the start of each session or phase, verify the current phase requirements and constraints in `DEV_PLAN.md`.
 
