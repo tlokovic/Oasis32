@@ -2,7 +2,7 @@
 
 ## 1. Philosophy: A "Boot from Removable Disk" Computer
 
-**Oasis32** (the Pico 2 Desert Island Computer) is designed in the tradition of classic microcomputers (such as the IBM PC, CP/M machines, and the Commodore 64): it is a **"boot from removable disk" computer** with **no built-in operating system**.
+**Oasis32** is designed in the tradition of classic microcomputers (such as the IBM PC, CP/M machines, and the Commodore 64): it is a **"boot from removable disk" computer** with **no built-in operating system**.
 
 Rather than flashing a monolithic OS into the Pico 2's onboard flash memory, the onboard flash holds only a compact, permanent **System ROM (BIOS & Bootloader)**. Once this System ROM stabilizes, the Pico 2 rarely—or never—needs to be re-flashed over USB in `BOOTSEL` mode. Instead, what the computer does on power-up or reset is determined entirely by the **boot disk** inserted into the SD card slot.
 
