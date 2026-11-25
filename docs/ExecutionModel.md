@@ -90,3 +90,17 @@ Stage-2 payloads invoke resident BIOS services using the standard RISC-V `ecall`
   * On `ecall` entry (`mcause = 11`, `riscv-privileged.pdf §3.1.12, p. 53`), hardware clears `mstatus.MIE` and records the `ecall` PC in `mepc` (`§3.1.11, p. 52`).
   * Because the caller explicitly invoked `ecall` like a function call, its `sp` is valid. The dispatcher saves `mepc`, `mstatus`, and working registers on the caller's stack, advances `mepc += 4` (past the 4-byte `ecall` instruction), and **re-enables `mstatus.MIE`** (`§3.1.6, p. 38`) before calling the BIOS service implementation.
   * Because `mscratch` is reserved exclusively for Core 0 hardware IRQs, if a Core 0 peripheral interrupt fires *in the middle of a slow BIOS call* (such as an SD card block read or write), the IRQ handler cleanly swaps onto the private `mscratch` IRQ stack, services the interrupt with `MIE = 0`, and returns directly back into the in-progress BIOS call—with zero nested-stack ambiguity. (Meanwhile, DVI video runs autonomously on Core 1 and is never affected by Core 0 `ecall` activity.)
+
+### 5.1 Partitioned Service IDs & OS Syscall Extensibility
+
+To allow a Stage-2 operating system to expose its own address-independent syscalls to applications running on top of it—without touching `mtvec` or Flash—the `a7` service-ID space is partitioned into two ranges:
+
+| `a7` Service ID Range | Owner | Dispatch Mechanism |
+|:---|:---|:---|
+| **`0x0000`–`0x00FF`** (0–255) | **Resident BIOS** | Dispatched directly from the BIOS's immutable Flash jump table (out-of-range IDs return `ERR_UNSUPPORTED`). |
+| **`0x0100`+** (256+) | **Stage-2 OS / User Extension** | Delegated to a single registered OS dispatcher function pointer (`os_ecall_handler`, stored in BIOS-private USB DPRAM and initialized to `0` at boot). |
+
+* **Registration via BIOS:** A Stage-2 OS registers (or clears, with `0`) its dispatcher via a dedicated BIOS call (`SYS_SET_OS_ECALL_HANDLER(fn_ptr)`). When an application executes `ecall` with `a7 >= 0x0100`:
+  * If `os_ecall_handler == 0`, the BIOS returns `ERR_UNSUPPORTED`.
+  * Otherwise, the BIOS invokes `os_ecall_handler(a0..a5, a7)` with `mstatus.MIE` already re-enabled and `mepc` already advanced by 4; the OS indexes its own RAM dispatch table (with no BIOS-imposed limit on syscall count) and returns its result in `a0`, which the BIOS returns to the caller via `mret`.
+* **Nested `ecall` Support (Re-Entrancy):** Because the BIOS `ecall` dispatcher saves `mepc`, `mstatus`, and `ra` **on the caller's stack** rather than in static global slots, an OS syscall handler (`a7 >= 0x0100`) can freely invoke BIOS services (`a7 < 0x0100`) via nested `ecall` instructions (e.g., `OS_FILE_READ` calling `BIOS_SD_READ`). Each nested `ecall` pushes and restores its own trap frame cleanly and returns via `mret`.
