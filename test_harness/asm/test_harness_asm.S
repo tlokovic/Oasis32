@@ -1,11 +1,11 @@
 /*
  * ============================================================================
- * Pico 2 Desert Island — Bare-Metal RISC-V Test Harness (Phase 2, Stage 2b)
+ * Pico 2 Desert Island — Bare-Metal RISC-V Test Harness (Phase 2, Complete!)
  * ============================================================================
  * Pure RP2350 Hazard3 RISC-V assembly with ZERO Pico SDK, runtime startup
  * files, or third-party libraries (-nostdlib -nostartfiles -nodefaultlibs).
  *
- * Stage 2b implements:
+ * Full hardware-abstraction test harness (Stages 2a + 2b + 2c):
  *   - Clock tree: 12 MHz XOSC -> PLL_SYS (126 MHz) -> clk_sys, clk_peri, clk_hstx
  *   - 1 MHz (1 us) free-running hardware timebase on TIMER0
  *   - Status LEDs: Red (GP26) -> Green (GP27) -> Blue (GP28), advancing 1/sec
@@ -18,11 +18,19 @@
  *       * Zero-CPU hardware TMDS expansion + ping-pong DMA (DREQ_HSTX = 52)
  *       * SRAM-resident DMA_IRQ_0 (IRQ 10) handler via Hazard3 Xh3irq CSRs
  *       * Static 1 px border + 20x15 (32x32 px) grid + bouncing 32x32 XOR box
+ *   - Keyboard/Mouse Host (CH9350): UART1 (GP20 TX, GP21 RX) at 115200 8N1
+ *       * Non-blocking 0x57 0xAB frame parser (State 2 keyboard, relative mouse)
+ *   - SD Card Breakout (BRK-SD v2.0): SPI0 (GP2-GP6)
+ *       * Debounced active-LOW Card Detect (GP6) plug/unplug events
+ *       * SPI init (CMD0/CMD8/ACMD41/CMD58/CMD9) + capacity printout
+ *       * Non-blocking 1 s rotating 512-byte block write/read/verify @ 12.6 MHz
  *
  * Primary Authoritative Documentation:
  *   - rp2350-datasheet.pdf (RP2350 Silicon Reference)
  *   - pico-2-datasheet.pdf (Raspberry Pi Pico 2 Board Reference)
  *   - hazard3-manual.pdf   (Hazard3 RISC-V Core Reference)
+ *   - CH9350DS.PDF         (CH9350 USB HID-to-UART Bridge Reference)
+ *   - sd-physical-layer-simplified-spec.pdf (SD Physical Layer Spec v6.00)
  * ============================================================================
  */
 
@@ -49,6 +57,8 @@
 .equ PLL_SYS_BASE,          0x40050000  /* rp2350-datasheet.pdf §8.6.5, p. 535 */
 .equ BUSCTRL_BASE,          0x40068000  /* rp2350-datasheet.pdf §12.15.4.3, p. 1170 */
 .equ UART0_BASE,            0x40070000  /* rp2350-datasheet.pdf §12.1.8, p. 883 */
+.equ UART1_BASE,            0x40078000  /* rp2350-datasheet.pdf §12.1.8, p. 883 */
+.equ SPI0_BASE,             0x40080000  /* rp2350-datasheet.pdf §12.3.5, p. 958 */
 .equ PWM_BASE,              0x400A8000  /* rp2350-datasheet.pdf §12.5.3, p. 984 */
 .equ TIMER0_BASE,           0x400B0000  /* rp2350-datasheet.pdf §12.8.5, p. 1099 */
 .equ HSTX_CTRL_BASE,        0x400C0000  /* rp2350-datasheet.pdf §12.11.7, p. 1120 */
@@ -133,11 +143,14 @@
 .equ RESET_BIT_PADS_BANK0,  (1 << 9)
 .equ RESET_BIT_PLL_SYS,     (1 << 14)
 .equ RESET_BIT_PWM,         (1 << 16)
+.equ RESET_BIT_SPI0,        (1 << 18)
 .equ RESET_BIT_TIMER0,      (1 << 23)
 .equ RESET_BIT_UART0,       (1 << 26)
-.equ RESETS_STAGE2B_MASK,   (RESET_BIT_BUSCTRL | RESET_BIT_DMA | RESET_BIT_HSTX | \
+.equ RESET_BIT_UART1,       (1 << 27)
+.equ RESETS_ALL_MASK,       (RESET_BIT_BUSCTRL | RESET_BIT_DMA | RESET_BIT_HSTX | \
                              RESET_BIT_IO_BANK0 | RESET_BIT_PADS_BANK0 | \
-                             RESET_BIT_PWM | RESET_BIT_TIMER0 | RESET_BIT_UART0)
+                             RESET_BIT_PWM | RESET_BIT_SPI0 | RESET_BIT_TIMER0 | \
+                             RESET_BIT_UART0 | RESET_BIT_UART1)
 
 /* ----------------------------------------------------------------------------
  * GPIO / IO_BANK0 / PADS_BANK0 / SIO Offsets
@@ -152,13 +165,21 @@
  *     0x018 = GPIO_OUT_SET, 0x020 = GPIO_OUT_CLR, 0x038 = GPIO_OE_SET
  * ---------------------------------------------------------------------------- */
 .equ IO_FUNCSEL_HSTX,       0
+.equ IO_FUNCSEL_SPI,        1
 .equ IO_FUNCSEL_UART,       2
 .equ IO_FUNCSEL_PWM,        4
 .equ IO_FUNCSEL_SIO,        5
 
 .equ IO_GPIO0_CTRL_OFF,     0x004   /* GP0  = UART0 TX */
 .equ IO_GPIO1_CTRL_OFF,     0x00C   /* GP1  = UART0 RX */
+.equ IO_GPIO2_CTRL_OFF,     0x014   /* GP2  = SPI0 SCK */
+.equ IO_GPIO3_CTRL_OFF,     0x01C   /* GP3  = SPI0 TX (MOSI) */
+.equ IO_GPIO4_CTRL_OFF,     0x024   /* GP4  = SPI0 RX (MISO) */
+.equ IO_GPIO5_CTRL_OFF,     0x02C   /* GP5  = SD CSn (SIO output) */
+.equ IO_GPIO6_CTRL_OFF,     0x034   /* GP6  = SD CD  (SIO input, active LOW) */
 .equ IO_GPIO12_CTRL_OFF,    0x064   /* GP12 = HSTX BIT0 (D0+) .. GP19 = 0x09C */
+.equ IO_GPIO20_CTRL_OFF,    0x0A4   /* GP20 = UART1 TX -> CH9350 RX */
+.equ IO_GPIO21_CTRL_OFF,    0x0AC   /* GP21 = UART1 RX <- CH9350 TX */
 .equ IO_GPIO22_CTRL_OFF,    0x0B4   /* GP22 = PWM3 A (Piezo) */
 .equ IO_GPIO26_CTRL_OFF,    0x0D4   /* GP26 = Red LED */
 .equ IO_GPIO27_CTRL_OFF,    0x0DC   /* GP27 = Green LED */
@@ -166,7 +187,14 @@
 
 .equ PADS_GPIO0_OFF,        0x004
 .equ PADS_GPIO1_OFF,        0x008
+.equ PADS_GPIO2_OFF,        0x00C
+.equ PADS_GPIO3_OFF,        0x010
+.equ PADS_GPIO4_OFF,        0x014
+.equ PADS_GPIO5_OFF,        0x018
+.equ PADS_GPIO6_OFF,        0x01C
 .equ PADS_GPIO12_OFF,       0x034   /* GP12 .. GP19 = 0x050 */
+.equ PADS_GPIO20_OFF,       0x054
+.equ PADS_GPIO21_OFF,       0x058
 .equ PADS_GPIO22_OFF,       0x05C
 .equ PADS_GPIO26_OFF,       0x06C
 .equ PADS_GPIO27_OFF,       0x070
@@ -182,9 +210,61 @@
 .equ PADS_RX_CLR_MASK,      (PADS_ISO_BIT | PADS_PDE_BIT)
 .equ PADS_RX_SET_MASK,      (PADS_IE_BIT  | PADS_PUE_BIT)
 
+.equ SIO_GPIO_IN_OFF,       0x004
 .equ SIO_GPIO_OUT_SET_OFF,  0x018
 .equ SIO_GPIO_OUT_CLR_OFF,  0x020
 .equ SIO_GPIO_OE_SET_OFF,   0x038
+
+.equ SD_CS_MASK,            (1 << 5)
+.equ SD_CD_MASK,            (1 << 6)
+
+/* ----------------------------------------------------------------------------
+ * PL022 SPI0 Registers (rp2350-datasheet.pdf §12.3.5, Tables 1152–1156)
+ *   f_sck = f_clk_peri / (CPSDVSR * (1 + SCR)), clk_peri = 126 MHz:
+ *     Init (~393.75 kHz): CPSDVSR = 16, SCR = 19 -> 126 MHz / 320 = 393.75 kHz
+ *     Run  (12.60 MHz):   CPSDVSR = 10, SCR = 0  -> 126 MHz / 10  = 12.60 MHz
+ *   SSPCR0: SCR[15:8] | SPH=0 | SPO=0 | FRF=0 (Motorola) | DSS=7 (8-bit)
+ *   SSPCR1: SSE=1 (bit 1), MS=0 (Master)
+ * ---------------------------------------------------------------------------- */
+.equ SPI_SSPCR0_OFF,        0x000
+.equ SPI_SSPCR1_OFF,        0x004
+.equ SPI_SSPDR_OFF,         0x008
+.equ SPI_SSPSR_OFF,         0x00C
+.equ SPI_SSPCPSR_OFF,       0x010
+
+.equ SPI_SR_TNF_BIT,        (1 << 1)    /* TX FIFO Not Full */
+.equ SPI_SR_RNE_BIT,        (1 << 2)    /* RX FIFO Not Empty */
+.equ SPI_CR0_INIT_394K,     ((19 << 8) | 0x07)
+.equ SPI_CPSR_INIT_394K,    16
+.equ SPI_CR0_RUN_12M6,      ((0  << 8) | 0x07)
+.equ SPI_CPSR_RUN_12M6,     10
+.equ SPI_CR1_ENABLE,        (1 << 1)
+
+/* SD Card State Machine & Timing Constants */
+.equ SD_STATE_NO_CARD,      0
+.equ SD_STATE_POWERUP_WAIT, 1
+.equ SD_STATE_ACMD41_POLL,  2
+.equ SD_STATE_READY,        3
+.equ SD_STATE_WRITE_BUSY,   4
+.equ SD_STATE_ERROR,        5
+
+.equ SD_BLOCK_SIZE,         512
+.equ SD_TEST_LBA_BASE,      1024
+.equ SD_TEST_LBA_COUNT,     16
+.equ SD_CD_DEBOUNCE_US,     50000
+.equ SD_POWERUP_SETTLE_US,  100000
+.equ SD_ACMD41_POLL_US,     10000
+.equ SD_ACMD41_TIMEOUT_US,  1000000
+.equ SD_WRITE_TIMEOUT_US,   500000
+.equ SD_TEST_INTERVAL_US,   1000000
+
+/* CH9350 Parser State Constants (CH9350DS.PDF §7.2.4, pp. 10-12) */
+.equ CH9350_SYNC1,          0x57
+.equ CH9350_SYNC2,          0xAB
+.equ CH9350_ST_SYNC1,       0
+.equ CH9350_ST_SYNC2,       1
+.equ CH9350_ST_CMD,         2
+.equ CH9350_ST_PAYLOAD,     3
 
 .equ LED_RED_MASK,          (1 << 26)
 .equ LED_GREEN_MASK,        (1 << 27)
@@ -396,9 +476,9 @@ zero_bss_done:
     li      t1, TICKS_CTRL_ENABLE
     sw      t1, TICKS_TIMER0_CTRL_OFF(t0)
 
-    /* 4. Release BUSCTRL, DMA, HSTX, IO_BANK0, PADS_BANK0, PWM, TIMER0, UART0. */
+    /* 4. Release all active peripherals from reset. */
     li      t0, RESETS_BASE + ATOMIC_CLR
-    li      t1, RESETS_STAGE2B_MASK
+    li      t1, RESETS_ALL_MASK
     sw      t1, RESETS_RESET_OFF(t0)
     li      t0, RESETS_BASE
 wait_periph_resets:
@@ -410,6 +490,7 @@ wait_periph_resets:
     call    leds_init
     call    piezo_init
     call    uart0_init
+    call    ch9350_uart1_init
 
     call    fb_draw_grid_and_border
     li      t0, 16
@@ -428,9 +509,10 @@ wait_periph_resets:
 
     call    dvi_hstx_init
 
-    /* 6. Queue startup banner for immediate non-blocking transmission. */
+    /* 6. Queue startup banner, then initialize SPI0 + check SD Card Detect. */
     la      a0, str_boot_banner
     call    uart0_tx_enqueue_str
+    call    sd_spi_init
 
     /* ------------------------------------------------------------------------
      * 7. Initialize Non-Blocking Cooperative Scheduler State
@@ -526,16 +608,23 @@ task3_done:
     /* ---- Task 4: Poll UART0 RX and enqueue dec/hex/bin formatted echo ---- */
     call    uart0_rx_poll
 
+    /* ---- Task 5: Poll UART1 (CH9350) for framed 0x57 0xAB HID packets ---- */
+    call    ch9350_rx_poll
+
+    /* ---- Task 6: Poll SD card (Card Detect, init, 1 s block test) ---- */
+    mv      a0, s8
+    call    sd_poll
+
     /* ---- Drain software TX ring buffer into PL011 TX FIFO ---- */
     call    uart0_tx_poll
 
-    /* ---- Task 5: Glide 32x32 XOR box across 20x15 grid (~60 px/s) ---- */
+    /* ---- Task 7: Glide 32x32 XOR box across 20x15 grid (~60 px/s) ---- */
     sub     t0, s8, s11
-    bltz    t0, task5_done
+    bltz    t0, task7_done
     call    video_step_box
     li      t0, VIDEO_STEP_INTERVAL_US
     add     s11, s11, t0
-task5_done:
+task7_done:
 
     j       main_loop
 
@@ -1059,6 +1148,24 @@ uart0_tx_enqueue_u32_dec:
     ret
 
 /* ----------------------------------------------------------------------------
+ * uart0_tx_enqueue_i32_dec(a0 = int32_t value): Signed decimal output
+ * ---------------------------------------------------------------------------- */
+uart0_tx_enqueue_i32_dec:
+    bgez    a0, uart0_tx_enqueue_u32_dec
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s9, 8(sp)
+    neg     s9, a0
+    li      a0, '-'
+    call    uart0_tx_enqueue_byte
+    mv      a0, s9
+    call    uart0_tx_enqueue_u32_dec
+    lw      s9, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+
+/* ----------------------------------------------------------------------------
  * uart0_tx_enqueue_u8_hex(a0 = uint8_t value): Emits 2 uppercase hex digits
  * ---------------------------------------------------------------------------- */
 uart0_tx_enqueue_u8_hex:
@@ -1204,6 +1311,1218 @@ uart0_tx_poll:
 
 
 /* ============================================================================
+ * 5b. CH9350 USB HID-to-UART Bridge (UART1, GP20 TX / GP21 RX, 115200 8N1)
+ * ============================================================================ */
+
+ch9350_uart1_init:
+    li      t0, UART1_BASE
+    sw      zero, UART_CR_OFF(t0)
+    li      t1, UART0_IBRD_115200           /* 68 @ 126 MHz clk_peri */
+    sw      t1, UART_IBRD_OFF(t0)
+    li      t1, UART0_FBRD_115200           /* 23 -> 115200.00 bps exact */
+    sw      t1, UART_FBRD_OFF(t0)
+    li      t1, UART_LCR_8N1_FIFO           /* 8N1 + 32-byte FIFOs */
+    sw      t1, UART_LCR_H_OFF(t0)
+    li      t1, UART_CR_EN_TX_RX
+    sw      t1, UART_CR_OFF(t0)
+
+    li      t0, IO_BANK0_BASE
+    li      t1, IO_FUNCSEL_UART
+    sw      t1, IO_GPIO20_CTRL_OFF(t0)      /* GP20 = UART1 TX */
+    sw      t1, IO_GPIO21_CTRL_OFF(t0)      /* GP21 = UART1 RX */
+
+    li      t0, PADS_BANK0_BASE + ATOMIC_CLR
+    li      t1, PADS_ISO_OD_MASK
+    sw      t1, PADS_GPIO20_OFF(t0)
+    li      t1, PADS_RX_CLR_MASK
+    sw      t1, PADS_GPIO21_OFF(t0)
+
+    li      t0, PADS_BANK0_BASE + ATOMIC_SET
+    li      t1, PADS_RX_SET_MASK            /* IE + PUE on GP21 (RX) */
+    sw      t1, PADS_GPIO21_OFF(t0)
+    ret
+
+/* ----------------------------------------------------------------------------
+ * ch9350_rx_poll: Non-blocking byte-by-byte 0x57 0xAB frame parser
+ * ---------------------------------------------------------------------------- */
+ch9350_rx_poll:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s9, 8(sp)
+ch9350_rx_loop:
+    li      t0, UART1_BASE
+    lw      t1, UART_FR_OFF(t0)
+    andi    t1, t1, UART_FR_RXFE_BIT
+    bnez    t1, ch9350_rx_done
+
+    lw      s9, UART_DR_OFF(t0)
+    andi    s9, s9, 0xFF                    /* s9 = received byte */
+
+    la      t0, ch9350_state
+    lw      t1, 0(t0)
+
+    beqz    t1, ch9350_st_sync1
+    li      t2, CH9350_ST_SYNC2
+    beq     t1, t2, ch9350_st_sync2
+    li      t2, CH9350_ST_CMD
+    beq     t1, t2, ch9350_st_cmd
+    j       ch9350_st_payload
+
+ch9350_st_sync1:
+    li      t2, CH9350_SYNC1
+    bne     s9, t2, ch9350_rx_loop
+    li      t2, CH9350_ST_SYNC2
+    sw      t2, 0(t0)
+    j       ch9350_rx_loop
+
+ch9350_st_sync2:
+    li      t2, CH9350_SYNC2
+    beq     s9, t2, 1f
+    li      t2, CH9350_SYNC1
+    beq     s9, t2, ch9350_rx_loop          /* Stay in SYNC2 on repeated 0x57 */
+    sw      zero, 0(t0)
+    j       ch9350_rx_loop
+1:
+    li      t2, CH9350_ST_CMD
+    sw      t2, 0(t0)
+    j       ch9350_rx_loop
+
+ch9350_st_cmd:
+    la      t2, ch9350_cmd
+    sw      s9, 0(t2)
+    la      t2, ch9350_payload_idx
+    sw      zero, 0(t2)
+
+    /* Determine expected payload length from command byte */
+    li      t3, 8
+    li      t2, 0x01
+    beq     s9, t2, ch9350_set_len
+    li      t3, 4
+    li      t2, 0x02
+    beq     s9, t2, ch9350_set_len
+    li      t3, 7
+    li      t2, 0x04
+    beq     s9, t2, ch9350_set_len
+    li      t3, 1
+    li      t2, 0x80
+    beq     s9, t2, ch9350_set_len
+    li      t2, 0x82
+    beq     s9, t2, ch9350_set_len
+    li      t2, 0x85
+    beq     s9, t2, ch9350_set_len
+    li      t3, 0
+    li      t2, 0x84
+    beq     s9, t2, ch9350_dispatch_now
+    li      t2, 0x86
+    beq     s9, t2, ch9350_dispatch_now
+    li      t2, 0x87
+    beq     s9, t2, ch9350_dispatch_now
+
+ch9350_dispatch_now:
+    sw      zero, 0(t0)                     /* Back to WAIT_SYNC1 */
+    mv      a0, s9
+    call    ch9350_dispatch_frame
+    j       ch9350_rx_loop
+
+ch9350_set_len:
+    la      t2, ch9350_payload_len
+    sw      t3, 0(t2)
+    li      t2, CH9350_ST_PAYLOAD
+    sw      t2, 0(t0)
+    j       ch9350_rx_loop
+
+ch9350_st_payload:
+    la      t2, ch9350_payload_idx
+    lw      t3, 0(t2)
+    la      t4, ch9350_payload
+    add     t4, t4, t3
+    sb      s9, 0(t4)
+    addi    t3, t3, 1
+    sw      t3, 0(t2)
+
+    la      t4, ch9350_payload_len
+    lw      t5, 0(t4)
+    bltu    t3, t5, ch9350_rx_loop
+
+    sw      zero, 0(t0)                     /* Frame complete -> WAIT_SYNC1 */
+    la      t2, ch9350_cmd
+    lw      a0, 0(t2)
+    call    ch9350_dispatch_frame
+    j       ch9350_rx_loop
+
+ch9350_rx_done:
+    lw      s9, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+
+/* ----------------------------------------------------------------------------
+ * ch9350_dispatch_frame(a0 = cmd): Decode ch9350_payload and log to UART0
+ * ---------------------------------------------------------------------------- */
+ch9350_dispatch_frame:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    sw      s10, 20(sp)
+
+    li      t0, 0x80
+    beq     a0, t0, ch9350_disp_done        /* Ignore 0x80 STATUS_CHANGE silently */
+
+    li      t0, 0x01
+    beq     a0, t0, ch9350_disp_kbd
+    li      t0, 0x02
+    beq     a0, t0, ch9350_disp_mouse
+    li      t0, 0x86
+    beq     a0, t0, ch9350_disp_disc
+    li      t0, 0x87
+    beq     a0, t0, ch9350_disp_ver
+
+    /* Fallback: log command code in hex */
+    mv      s9, a0
+    la      a0, str_hid_cmd
+    call    uart0_tx_enqueue_str
+    mv      a0, s9
+    call    uart0_tx_enqueue_u8_hex
+    la      a0, str_crlf
+    call    uart0_tx_enqueue_str
+    j       ch9350_disp_done
+
+ch9350_disp_kbd:
+    la      a0, str_hid_kbd
+    call    uart0_tx_enqueue_str
+    la      t0, ch9350_payload
+    lbu     a0, 0(t0)                       /* mod byte */
+    call    uart0_tx_enqueue_u8_hex
+    la      a0, str_hid_keys
+    call    uart0_tx_enqueue_str
+
+    li      s9, 2                           /* payload[2..7] = Key1..Key6 */
+    li      s10, 0                          /* any_key flag */
+kbd_key_loop:
+    la      t0, ch9350_payload
+    add     t0, t0, s9
+    lbu     t1, 0(t0)
+    beqz    t1, kbd_key_next
+    beqz    s10, 1f
+    la      a0, str_comma_sp
+    call    uart0_tx_enqueue_str
+1:
+    la      a0, str_0x
+    call    uart0_tx_enqueue_str
+    la      t0, ch9350_payload
+    add     t0, t0, s9
+    lbu     a0, 0(t0)
+    call    uart0_tx_enqueue_u8_hex
+    /* Print ASCII letter/digit in parentheses for common HID codes */
+    la      t0, ch9350_payload
+    add     t0, t0, s9
+    lbu     t1, 0(t0)
+    li      t2, 0x04
+    bltu    t1, t2, kbd_key_mark
+    li      t2, 0x1D
+    bgtu    t1, t2, kbd_check_digit
+    addi    t1, t1, ('A' - 0x04)
+    j       kbd_print_char
+kbd_check_digit:
+    li      t2, 0x1E
+    bltu    t1, t2, kbd_key_mark
+    li      t2, 0x26
+    bgtu    t1, t2, kbd_check_zero
+    addi    t1, t1, ('1' - 0x1E)
+    j       kbd_print_char
+kbd_check_zero:
+    li      t2, 0x27
+    bne     t1, t2, kbd_key_mark
+    li      t1, '0'
+kbd_print_char:
+    sw      t1, 0(sp)
+    li      a0, '('
+    call    uart0_tx_enqueue_byte
+    lw      a0, 0(sp)
+    call    uart0_tx_enqueue_byte
+    li      a0, ')'
+    call    uart0_tx_enqueue_byte
+kbd_key_mark:
+    li      s10, 1
+kbd_key_next:
+    addi    s9, s9, 1
+    li      t0, 8
+    bltu    s9, t0, kbd_key_loop
+
+    bnez    s10, 2f
+    la      a0, str_none
+    call    uart0_tx_enqueue_str
+2:
+    la      a0, str_rbrack_crlf
+    call    uart0_tx_enqueue_str
+    j       ch9350_disp_done
+
+ch9350_disp_mouse:
+    la      a0, str_hid_mouse
+    call    uart0_tx_enqueue_str
+    la      t0, ch9350_payload
+    lbu     a0, 0(t0)                       /* buttons */
+    call    uart0_tx_enqueue_u8_hex
+
+    la      a0, str_dx
+    call    uart0_tx_enqueue_str
+    la      t0, ch9350_payload
+    lb      a0, 1(t0)                       /* signed int8 dX */
+    call    uart0_tx_enqueue_i32_dec
+
+    la      a0, str_dy
+    call    uart0_tx_enqueue_str
+    la      t0, ch9350_payload
+    lb      a0, 2(t0)                       /* signed int8 dY */
+    call    uart0_tx_enqueue_i32_dec
+
+    la      a0, str_wheel
+    call    uart0_tx_enqueue_str
+    la      t0, ch9350_payload
+    lb      a0, 3(t0)                       /* signed int8 wheel */
+    call    uart0_tx_enqueue_i32_dec
+
+    la      a0, str_crlf
+    call    uart0_tx_enqueue_str
+    j       ch9350_disp_done
+
+ch9350_disp_disc:
+    la      a0, str_hid_disc
+    call    uart0_tx_enqueue_str
+    j       ch9350_disp_done
+
+ch9350_disp_ver:
+    la      a0, str_hid_ver
+    call    uart0_tx_enqueue_str
+
+ch9350_disp_done:
+    lw      s10, 20(sp)
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+
+/* ============================================================================
+ * 5c. SD Card Raw Block Device over SPI0 (GP2-GP6, PL022, Mode 0)
+ * ============================================================================ */
+
+/* sd_spi_set_speed(a0 = SSPCR0, a1 = SSPCPSR) */
+sd_spi_set_speed:
+    li      t0, SPI0_BASE
+    sw      zero, SPI_SSPCR1_OFF(t0)        /* Disable SSE while changing clock */
+    sw      a1, SPI_SSPCPSR_OFF(t0)
+    sw      a0, SPI_SSPCR0_OFF(t0)
+    li      t1, SPI_CR1_ENABLE
+    sw      t1, SPI_SSPCR1_OFF(t0)
+    ret
+
+/* sd_spi_xfer(a0 = tx_byte) -> a0 = rx_byte */
+sd_spi_xfer:
+    li      t0, SPI0_BASE
+1:
+    lw      t1, SPI_SSPSR_OFF(t0)
+    andi    t1, t1, SPI_SR_TNF_BIT
+    beqz    t1, 1b                          /* Wait for TX FIFO space */
+    sw      a0, SPI_SSPDR_OFF(t0)
+2:
+    lw      t1, SPI_SSPSR_OFF(t0)
+    andi    t1, t1, SPI_SR_RNE_BIT
+    beqz    t1, 2b                          /* Wait for RX byte */
+    lw      a0, SPI_SSPDR_OFF(t0)
+    andi    a0, a0, 0xFF
+    ret
+
+sd_cs_select:
+    li      t0, SIO_BASE
+    li      t1, SD_CS_MASK
+    sw      t1, SIO_GPIO_OUT_CLR_OFF(t0)
+    ret
+
+sd_deselect_and_clock:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    li      t0, SIO_BASE
+    li      t1, SD_CS_MASK
+    sw      t1, SIO_GPIO_OUT_SET_OFF(t0)
+    li      a0, 0xFF
+    call    sd_spi_xfer                     /* 8 trailing clocks to release MISO */
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+
+/* sd_send_cmd(a0 = cmd_idx, a1 = arg, a2 = crc) -> a0 = R1 */
+sd_send_cmd:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    sw      s10, 20(sp)
+    sw      a0, 16(sp)
+    sw      a1, 12(sp)
+    sw      a2, 8(sp)
+
+    /* Wait up to 64 bytes for card DO to idle high (0xFF) */
+    li      s9, 64
+1:
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      t0, 0xFF
+    beq     a0, t0, 2f
+    addi    s9, s9, -1
+    bnez    s9, 1b
+2:
+    lw      a0, 16(sp)
+    andi    a0, a0, 0x3F
+    ori     a0, a0, 0x40
+    call    sd_spi_xfer                     /* Byte 0: 01 + cmd_idx */
+
+    lw      s9, 12(sp)
+    srli    a0, s9, 24
+    andi    a0, a0, 0xFF
+    call    sd_spi_xfer                     /* Byte 1: arg[31:24] */
+    srli    a0, s9, 16
+    andi    a0, a0, 0xFF
+    call    sd_spi_xfer                     /* Byte 2: arg[23:16] */
+    srli    a0, s9, 8
+    andi    a0, a0, 0xFF
+    call    sd_spi_xfer                     /* Byte 3: arg[15:8] */
+    andi    a0, s9, 0xFF
+    call    sd_spi_xfer                     /* Byte 4: arg[7:0] */
+
+    lw      a0, 8(sp)
+    call    sd_spi_xfer                     /* Byte 5: CRC */
+
+    /* Poll up to 16 bytes for R1 (bit 7 == 0) */
+    li      s9, 16
+3:
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    andi    t0, a0, 0x80
+    beqz    t0, 4f
+    addi    s9, s9, -1
+    bnez    s9, 3b
+4:
+    lw      s10, 20(sp)
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+/* sd_read_data_packet(a0 = dst_ptr, a1 = byte_len) -> a0 = 1(ok) / 0(fail) */
+sd_read_data_packet:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    sw      s10, 20(sp)
+    mv      s9, a0                          /* dst_ptr */
+    mv      s10, a1                         /* len */
+
+    li      t0, 50000
+    sw      t0, 12(sp)
+1:
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      t0, 0xFF
+    bne     a0, t0, 2f
+    lw      t0, 12(sp)
+    addi    t0, t0, -1
+    sw      t0, 12(sp)
+    bnez    t0, 1b
+2:
+    li      t0, 0xFE
+    bne     a0, t0, sd_pkt_fail
+3:
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    sb      a0, 0(s9)
+    addi    s9, s9, 1
+    addi    s10, s10, -1
+    bnez    s10, 3b
+
+    li      a0, 0xFF
+    call    sd_spi_xfer                     /* Discard CRC16 */
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 1
+    j       sd_pkt_ret
+sd_pkt_fail:
+    li      a0, 0
+sd_pkt_ret:
+    lw      s10, 20(sp)
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+/* sd_spi_init: Configure SPI0 + GP2..GP6 + sample initial CD after 100 us */
+sd_spi_init:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+
+    li      a0, SPI_CR0_INIT_394K
+    li      a1, SPI_CPSR_INIT_394K
+    call    sd_spi_set_speed
+
+    /* IO_BANK0: GP2/3/4 = SPI0 (F1), GP5/6 = SIO (F5) */
+    li      t0, IO_BANK0_BASE
+    li      t1, IO_FUNCSEL_SPI
+    sw      t1, IO_GPIO2_CTRL_OFF(t0)
+    sw      t1, IO_GPIO3_CTRL_OFF(t0)
+    sw      t1, IO_GPIO4_CTRL_OFF(t0)
+    li      t1, IO_FUNCSEL_SIO
+    sw      t1, IO_GPIO5_CTRL_OFF(t0)
+    sw      t1, IO_GPIO6_CTRL_OFF(t0)
+
+    /* SIO: GP5 (CSn) output HIGH; GP6 (CD) input */
+    li      t0, SIO_BASE
+    li      t1, SD_CS_MASK
+    sw      t1, SIO_GPIO_OUT_SET_OFF(t0)
+    sw      t1, SIO_GPIO_OE_SET_OFF(t0)
+
+    /* PADS_BANK0: clear ISO/OD on GP2/3/5; set IE+PUE (clear ISO/PDE) on GP4/6 */
+    li      t0, PADS_BANK0_BASE + ATOMIC_CLR
+    li      t1, PADS_ISO_OD_MASK
+    sw      t1, PADS_GPIO2_OFF(t0)
+    sw      t1, PADS_GPIO3_OFF(t0)
+    sw      t1, PADS_GPIO5_OFF(t0)
+    li      t1, PADS_RX_CLR_MASK
+    sw      t1, PADS_GPIO4_OFF(t0)
+    sw      t1, PADS_GPIO6_OFF(t0)
+
+    li      t0, PADS_BANK0_BASE + ATOMIC_SET
+    li      t1, PADS_RX_SET_MASK
+    sw      t1, PADS_GPIO4_OFF(t0)          /* Pull-up on MISO (GP4) */
+    sw      t1, PADS_GPIO6_OFF(t0)          /* Pull-up on CD (GP6, active LOW) */
+
+    /* Wait 100 us for GP6 pull-up to charge pad capacitance before boot sample */
+    li      t0, TIMER0_BASE
+    lw      t1, TIMER_RAWL_OFF(t0)
+1:
+    lw      t2, TIMER_RAWL_OFF(t0)
+    sub     t3, t2, t1
+    li      t4, 100
+    bltu    t3, t4, 1b
+
+    /* Sample initial CD state: LOW (bit 6 == 0) means card is seated */
+    li      t0, SIO_BASE
+    lw      t1, SIO_GPIO_IN_OFF(t0)
+    andi    t1, t1, SD_CD_MASK
+    seqz    t1, t1                          /* 1 if seated, 0 if empty */
+    la      t3, sd_cd_stable
+    sw      t1, 0(t3)
+    la      t3, sd_cd_last_raw
+    sw      t1, 0(t3)
+    la      t3, sd_cd_change_us
+    sw      t2, 0(t3)
+
+    beqz    t1, sd_init_no_card
+    la      a0, str_sd_boot_det
+    call    uart0_tx_enqueue_str
+    li      t0, SD_POWERUP_SETTLE_US
+    add     t2, t2, t0
+    la      t3, sd_timer_us
+    sw      t2, 0(t3)
+    li      t0, SD_STATE_POWERUP_WAIT
+    la      t3, sd_state
+    sw      t0, 0(t3)
+    j       sd_spi_init_done
+
+sd_init_no_card:
+    la      a0, str_sd_none
+    call    uart0_tx_enqueue_str
+    la      t3, sd_state
+    sw      zero, 0(t3)
+
+sd_spi_init_done:
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+
+/* sd_start_init_sequence(a0 = now_us): 80 clocks + CMD0 + CMD8 -> ACMD41_POLL */
+sd_start_init_sequence:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    sw      s10, 20(sp)
+    mv      s10, a0                         /* now_us */
+
+    li      a0, SPI_CR0_INIT_394K
+    li      a1, SPI_CPSR_INIT_394K
+    call    sd_spi_set_speed
+    li      t0, SIO_BASE
+    li      t1, SD_CS_MASK
+    sw      t1, SIO_GPIO_OUT_SET_OFF(t0)    /* CS HIGH */
+
+    /* 80 dummy clocks (10 bytes of 0xFF) with CS HIGH */
+    li      s9, 10
+1:
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    addi    s9, s9, -1
+    bnez    s9, 1b
+
+    /* CMD0 (GO_IDLE_STATE, CRC=0x95) -> expect R1=0x01 */
+    li      s9, 8
+2:
+    call    sd_cs_select
+    li      a0, 0
+    li      a1, 0
+    li      a2, 0x95
+    call    sd_send_cmd
+    sw      a0, 12(sp)
+    call    sd_deselect_and_clock
+    lw      a0, 12(sp)
+    li      t0, 0x01
+    beq     a0, t0, 3f
+    addi    s9, s9, -1
+    bnez    s9, 2b
+    la      a0, str_sd_err_cmd0
+    call    uart0_tx_enqueue_str
+    j       sd_start_fail
+3:
+    /* CMD8 (SEND_IF_COND, 0x1AA, CRC=0x87) */
+    call    sd_cs_select
+    li      a0, 8
+    li      a1, 0x1AA
+    li      a2, 0x87
+    call    sd_send_cmd
+    sw      a0, 12(sp)
+    li      t0, 0x01
+    bne     a0, t0, 4f
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 0xFF
+    call    sd_spi_xfer                     /* Echo check pattern (0xAA) */
+    sw      a0, 8(sp)
+4:
+    call    sd_deselect_and_clock
+    lw      t0, 12(sp)
+    li      t1, 0x01
+    beq     t0, t1, 5f
+    li      t1, 0x05                        /* Legacy SD v1.x */
+    bne     t0, t1, sd_start_err_cmd8
+    la      t2, sd_is_v2
+    sw      zero, 0(t2)
+    j       6f
+5:
+    lw      t0, 8(sp)
+    li      t1, 0xAA
+    bne     t0, t1, sd_start_err_cmd8
+    li      t1, 1
+    la      t2, sd_is_v2
+    sw      t1, 0(t2)
+6:
+    la      t0, sd_timer_us
+    sw      s10, 0(t0)
+    li      t1, SD_ACMD41_TIMEOUT_US
+    add     t1, s10, t1
+    la      t0, sd_deadline_us
+    sw      t1, 0(t0)
+    li      t1, SD_STATE_ACMD41_POLL
+    la      t0, sd_state
+    sw      t1, 0(t0)
+    j       sd_start_ret
+
+sd_start_err_cmd8:
+    la      a0, str_sd_err_cmd8
+    call    uart0_tx_enqueue_str
+sd_start_fail:
+    li      t1, SD_STATE_ERROR
+    la      t0, sd_state
+    sw      t1, 0(t0)
+sd_start_ret:
+    lw      s10, 20(sp)
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+/* sd_finish_init_sequence(a0 = now_us): CMD58 + CMD16(if SDSC) + 12.6 MHz + CMD9 */
+sd_finish_init_sequence:
+    addi    sp, sp, -48
+    sw      ra, 44(sp)
+    sw      s9, 40(sp)
+    sw      s10, 36(sp)
+    mv      s10, a0                         /* now_us */
+
+    /* CMD58 (READ_OCR) -> OCR[0] bit 6 = CCS (bit 30) */
+    call    sd_cs_select
+    li      a0, 58
+    li      a1, 0
+    li      a2, 0xFF
+    call    sd_send_cmd
+    sw      a0, 32(sp)
+    bnez    a0, 1f
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    sw      a0, 28(sp)                      /* OCR[0] */
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 0xFF
+    call    sd_spi_xfer
+1:
+    call    sd_deselect_and_clock
+    lw      t0, 32(sp)
+    bnez    t0, sd_fin_fail
+
+    la      t0, sd_is_v2
+    lw      t0, 0(t0)
+    lw      t1, 28(sp)
+    andi    t1, t1, 0x40
+    snez    t1, t1
+    and     t0, t0, t1                      /* sd_is_sdhc = v2 && CCS */
+    la      t2, sd_is_sdhc
+    sw      t0, 0(t2)
+
+    bnez    t0, 2f                          /* If SDSC, set block len = 512 */
+    call    sd_cs_select
+    li      a0, 16
+    li      a1, SD_BLOCK_SIZE
+    li      a2, 0xFF
+    call    sd_send_cmd
+    sw      a0, 32(sp)
+    call    sd_deselect_and_clock
+    lw      t0, 32(sp)
+    bnez    t0, sd_fin_fail
+2:
+    /* Switch SPI0 to 12.6 MHz (CPSDVSR = 10, SCR = 0) */
+    li      a0, SPI_CR0_RUN_12M6
+    li      a1, SPI_CPSR_RUN_12M6
+    call    sd_spi_set_speed
+
+    /* CMD9 (SEND_CSD): read 16-byte CSD into stack[0..15] */
+    call    sd_cs_select
+    li      a0, 9
+    li      a1, 0
+    li      a2, 0xFF
+    call    sd_send_cmd
+    li      s9, 0
+    bnez    a0, 3f
+    mv      a0, sp
+    li      a1, 16
+    call    sd_read_data_packet
+    mv      s9, a0
+3:
+    call    sd_deselect_and_clock
+
+    /* Log "[SD] Ready: SDHC/SDXC (or SDSC), <blocks> blocks (<MiB> MiB), SPI0=12.6 MHz" */
+    la      a0, str_sd_ready
+    call    uart0_tx_enqueue_str
+    la      t0, sd_is_sdhc
+    lw      t0, 0(t0)
+    la      a0, str_sdhc
+    bnez    t0, 4f
+    la      a0, str_sdsc
+4:
+    call    uart0_tx_enqueue_str
+
+    beqz    s9, sd_fin_no_csd
+    lbu     t0, 0(sp)
+    srli    t0, t0, 6                       /* CSD_STRUCTURE = csd[0][7:6] */
+    li      t1, 1
+    bne     t0, t1, sd_fin_csd_v1
+
+    /* CSD v2.0 (SDHC/SDXC): C_SIZE = ((csd[7]&0x3F)<<16)|(csd[8]<<8)|csd[9] */
+    lbu     t0, 7(sp)
+    andi    t0, t0, 0x3F
+    slli    t0, t0, 16
+    lbu     t1, 8(sp)
+    slli    t1, t1, 8
+    or      t0, t0, t1
+    lbu     t1, 9(sp)
+    or      t0, t0, t1
+    addi    t0, t0, 1                       /* C_SIZE + 1 (units of 512 KiB) */
+    slli    s9, t0, 10                      /* blocks = (C_SIZE + 1) * 1024 */
+    srli    t2, t0, 1                       /* MiB = (C_SIZE + 1) / 2 */
+    sw      t2, 24(sp)
+    j       sd_fin_print_cap
+
+sd_fin_csd_v1:
+    lbu     t0, 5(sp)
+    andi    t0, t0, 0x0F                    /* READ_BL_LEN */
+    lbu     t1, 6(sp)
+    andi    t1, t1, 0x03
+    slli    t1, t1, 10
+    lbu     t2, 7(sp)
+    slli    t2, t2, 2
+    or      t1, t1, t2
+    lbu     t2, 8(sp)
+    srli    t2, t2, 6
+    or      t1, t1, t2                      /* C_SIZE */
+    addi    t1, t1, 1
+    lbu     t2, 9(sp)
+    andi    t2, t2, 0x03
+    slli    t2, t2, 1
+    lbu     t3, 10(sp)
+    srli    t3, t3, 7
+    or      t2, t2, t3                      /* C_SIZE_MULT */
+    add     t0, t0, t2
+    addi    t0, t0, -7                      /* shift = (MULT+2+BL_LEN) - 9 */
+    sll     s9, t1, t0                      /* blocks */
+    srli    t2, s9, 11                      /* MiB = blocks / 2048 */
+    sw      t2, 24(sp)
+
+sd_fin_print_cap:
+    la      a0, str_comma_sp
+    call    uart0_tx_enqueue_str
+    mv      a0, s9
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_sd_blocks
+    call    uart0_tx_enqueue_str
+    lw      a0, 24(sp)
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_sd_mib
+    call    uart0_tx_enqueue_str
+    j       sd_fin_ready
+
+sd_fin_no_csd:
+    la      a0, str_sd_nocsd
+    call    uart0_tx_enqueue_str
+
+sd_fin_ready:
+    la      t0, sd_test_iter
+    sw      zero, 0(t0)
+    li      t1, SD_TEST_LBA_BASE
+    la      t0, sd_test_lba
+    sw      t1, 0(t0)
+    li      t1, SD_TEST_INTERVAL_US
+    add     t1, s10, t1
+    la      t0, sd_timer_us
+    sw      t1, 0(t0)
+    li      t1, SD_STATE_READY
+    la      t0, sd_state
+    sw      t1, 0(t0)
+    j       sd_fin_ret
+
+sd_fin_fail:
+    la      a0, str_sd_err_fin
+    call    uart0_tx_enqueue_str
+    li      t1, SD_STATE_ERROR
+    la      t0, sd_state
+    sw      t1, 0(t0)
+sd_fin_ret:
+    lw      s10, 36(sp)
+    lw      s9, 40(sp)
+    lw      ra, 44(sp)
+    addi    sp, sp, 48
+    ret
+
+/* sd_begin_block_write(a0 = lba, a1 = iter, a2 = now_us) -> a0 = 1(ok)/0(fail) */
+sd_begin_block_write:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    sw      s10, 20(sp)
+    mv      s9, a0                          /* lba */
+    sw      a2, 12(sp)                      /* now_us */
+
+    /* Fill 512-byte pattern: byte[i] = (i ^ (i >> 8) ^ lba ^ (iter*37) ^ 0xA5) */
+    li      t0, 37
+    mul     t1, a1, t0
+    xor     t1, t1, a0
+    xori    t1, t1, 0xA5                    /* seed */
+    la      t2, sd_tx_buf
+    li      t3, 0
+    li      t4, SD_BLOCK_SIZE
+1:
+    srli    t5, t3, 8
+    xor     t5, t5, t3
+    xor     t5, t5, t1
+    sb      t5, 0(t2)
+    addi    t2, t2, 1
+    addi    t3, t3, 1
+    bltu    t3, t4, 1b
+
+    /* Compute block/byte address */
+    la      t0, sd_is_sdhc
+    lw      t0, 0(t0)
+    mv      a1, s9
+    bnez    t0, 2f
+    slli    a1, s9, 9                       /* SDSC byte address = lba * 512 */
+2:
+    call    sd_cs_select
+    li      a0, 24                          /* CMD24: WRITE_BLOCK */
+    li      a2, 0xFF
+    call    sd_send_cmd
+    bnez    a0, sd_wr_fail
+
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    li      a0, 0xFE                        /* Start Block Token */
+    call    sd_spi_xfer
+
+    la      s10, sd_tx_buf
+    li      t0, SD_BLOCK_SIZE
+    sw      t0, 8(sp)
+3:
+    lbu     a0, 0(s10)
+    call    sd_spi_xfer
+    addi    s10, s10, 1
+    lw      t0, 8(sp)
+    addi    t0, t0, -1
+    sw      t0, 8(sp)
+    bnez    t0, 3b
+
+    li      a0, 0xFF                        /* Dummy CRC16 */
+    call    sd_spi_xfer
+    li      a0, 0xFF
+    call    sd_spi_xfer
+
+    li      a0, 0xFF                        /* Data response token */
+    call    sd_spi_xfer
+    andi    t0, a0, 0x1F
+    li      t1, 0x05
+    bne     t0, t1, sd_wr_fail
+
+    /* Leave CS LOW and poll busy non-blockingly in SD_STATE_WRITE_BUSY */
+    lw      t0, 12(sp)
+    la      t1, sd_write_start_us
+    sw      t0, 0(t1)
+    li      t1, SD_WRITE_TIMEOUT_US
+    add     t0, t0, t1
+    la      t1, sd_deadline_us
+    sw      t0, 0(t1)
+    li      a0, 1
+    j       sd_wr_ret
+
+sd_wr_fail:
+    sw      a0, 8(sp)
+    call    sd_deselect_and_clock
+    la      a0, str_sd_wr_fail
+    call    uart0_tx_enqueue_str
+    mv      a0, s9
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_sd_r1
+    call    uart0_tx_enqueue_str
+    lw      a0, 8(sp)
+    call    uart0_tx_enqueue_u8_hex
+    la      a0, str_rparen_crlf
+    call    uart0_tx_enqueue_str
+    li      a0, 0
+sd_wr_ret:
+    lw      s10, 20(sp)
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+/* sd_read_and_verify_block(a0 = lba, a1 = iter, a2 = write_ms) */
+sd_read_and_verify_block:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    sw      s10, 20(sp)
+    mv      s9, a0                          /* lba */
+    sw      a1, 16(sp)                      /* iter */
+    sw      a2, 12(sp)                      /* write_ms */
+
+    la      t0, sd_is_sdhc
+    lw      t0, 0(t0)
+    mv      a1, s9
+    bnez    t0, 1f
+    slli    a1, s9, 9
+1:
+    call    sd_cs_select
+    li      a0, 17                          /* CMD17: READ_SINGLE_BLOCK */
+    li      a2, 0xFF
+    call    sd_send_cmd
+    li      s10, 0
+    bnez    a0, 2f
+    la      a0, sd_rx_buf
+    li      a1, SD_BLOCK_SIZE
+    call    sd_read_data_packet
+    mv      s10, a0
+2:
+    call    sd_deselect_and_clock
+    beqz    s10, sd_rd_fail
+
+    /* Compare all 512 bytes against sd_tx_buf */
+    la      t0, sd_tx_buf
+    la      t1, sd_rx_buf
+    li      t2, 0
+    li      t3, SD_BLOCK_SIZE
+3:
+    lbu     t4, 0(t0)
+    lbu     t5, 0(t1)
+    bne     t4, t5, sd_ver_fail
+    addi    t0, t0, 1
+    addi    t1, t1, 1
+    addi    t2, t2, 1
+    bltu    t2, t3, 3b
+
+    la      a0, str_sd_blk
+    call    uart0_tx_enqueue_str
+    mv      a0, s9
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_hash
+    call    uart0_tx_enqueue_str
+    lw      a0, 16(sp)
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_sd_pass
+    call    uart0_tx_enqueue_str
+    lw      a0, 12(sp)
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_ms_crlf
+    call    uart0_tx_enqueue_str
+    j       sd_rd_ret
+
+sd_ver_fail:
+    sw      t2, 8(sp)
+    la      a0, str_sd_blk
+    call    uart0_tx_enqueue_str
+    mv      a0, s9
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_sd_mismatch
+    call    uart0_tx_enqueue_str
+    lw      a0, 8(sp)
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_crlf
+    call    uart0_tx_enqueue_str
+    j       sd_rd_ret
+
+sd_rd_fail:
+    la      a0, str_sd_rd_fail
+    call    uart0_tx_enqueue_str
+    mv      a0, s9
+    call    uart0_tx_enqueue_u32_dec
+    la      a0, str_crlf
+    call    uart0_tx_enqueue_str
+
+sd_rd_ret:
+    lw      s10, 20(sp)
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+/* sd_poll(a0 = now_us): Non-blocking CD debounce + SD card state machine */
+sd_poll:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s9, 24(sp)
+    mv      s9, a0                          /* now_us */
+
+    /* 1. Debounce active-LOW Card Detect switch on GP6 */
+    li      t0, SIO_BASE
+    lw      t1, SIO_GPIO_IN_OFF(t0)
+    andi    t1, t1, SD_CD_MASK
+    seqz    t1, t1                          /* raw_inserted = 1 if LOW */
+
+    la      t2, sd_cd_last_raw
+    lw      t3, 0(t2)
+    beq     t1, t3, 1f
+    sw      t1, 0(t2)
+    la      t2, sd_cd_change_us
+    sw      s9, 0(t2)
+    j       sd_fsm_dispatch
+1:
+    la      t2, sd_cd_stable
+    lw      t3, 0(t2)
+    beq     t1, t3, sd_fsm_dispatch
+    la      t4, sd_cd_change_us
+    lw      t4, 0(t4)
+    sub     t4, s9, t4
+    li      t5, SD_CD_DEBOUNCE_US
+    bltu    t4, t5, sd_fsm_dispatch
+
+    /* Debounced CD state transition! */
+    sw      t1, 0(t2)
+    beqz    t1, sd_on_removed
+
+    la      a0, str_sd_inserted
+    call    uart0_tx_enqueue_str
+    li      t0, SD_POWERUP_SETTLE_US
+    add     t0, s9, t0
+    la      t1, sd_timer_us
+    sw      t0, 0(t1)
+    li      t0, SD_STATE_POWERUP_WAIT
+    la      t1, sd_state
+    sw      t0, 0(t1)
+    j       sd_fsm_dispatch
+
+sd_on_removed:
+    li      t0, SIO_BASE
+    li      t1, SD_CS_MASK
+    sw      t1, SIO_GPIO_OUT_SET_OFF(t0)
+    li      a0, SPI_CR0_INIT_394K
+    li      a1, SPI_CPSR_INIT_394K
+    call    sd_spi_set_speed
+    la      t0, sd_state
+    sw      zero, 0(t0)
+    la      a0, str_sd_removed
+    call    uart0_tx_enqueue_str
+
+sd_fsm_dispatch:
+    la      t0, sd_state
+    lw      t1, 0(t0)
+    beqz    t1, sd_poll_done                /* NO_CARD */
+    li      t2, SD_STATE_ERROR
+    beq     t1, t2, sd_poll_done            /* ERROR */
+    li      t2, SD_STATE_POWERUP_WAIT
+    beq     t1, t2, sd_st_powerup
+    li      t2, SD_STATE_ACMD41_POLL
+    beq     t1, t2, sd_st_acmd41
+    li      t2, SD_STATE_READY
+    beq     t1, t2, sd_st_ready
+    j       sd_st_write_busy
+
+sd_st_powerup:
+    la      t0, sd_timer_us
+    lw      t0, 0(t0)
+    sub     t0, s9, t0
+    bltz    t0, sd_poll_done
+    mv      a0, s9
+    call    sd_start_init_sequence
+    j       sd_poll_done
+
+sd_st_acmd41:
+    la      t0, sd_timer_us
+    lw      t0, 0(t0)
+    sub     t0, s9, t0
+    bltz    t0, sd_poll_done
+
+    call    sd_cs_select
+    li      a0, 55                          /* CMD55: APP_CMD */
+    li      a1, 0
+    li      a2, 0xFF
+    call    sd_send_cmd
+    sw      a0, 12(sp)
+    call    sd_deselect_and_clock
+    lw      t0, 12(sp)
+    li      t1, 1
+    bgtu    t0, t1, 2f
+
+    call    sd_cs_select
+    li      a0, 41                          /* ACMD41 (HCS=1 for v2) */
+    la      t0, sd_is_v2
+    lw      t0, 0(t0)
+    li      a1, 0
+    beqz    t0, 1f
+    li      a1, 0x40000000
+1:
+    li      a2, 0xFF
+    call    sd_send_cmd
+    sw      a0, 12(sp)
+    call    sd_deselect_and_clock
+2:
+    lw      t0, 12(sp)
+    bnez    t0, 3f
+    mv      a0, s9
+    call    sd_finish_init_sequence
+    j       sd_poll_done
+3:
+    la      t0, sd_deadline_us
+    lw      t0, 0(t0)
+    sub     t0, s9, t0
+    bgez    t0, 4f
+    li      t0, SD_ACMD41_POLL_US
+    add     t0, s9, t0
+    la      t1, sd_timer_us
+    sw      t0, 0(t1)
+    j       sd_poll_done
+4:
+    la      a0, str_sd_err_acmd41
+    call    uart0_tx_enqueue_str
+    li      t0, SD_STATE_ERROR
+    la      t1, sd_state
+    sw      t0, 0(t1)
+    j       sd_poll_done
+
+sd_st_ready:
+    la      t0, sd_timer_us
+    lw      t0, 0(t0)
+    sub     t0, s9, t0
+    bltz    t0, sd_poll_done
+
+    la      t0, sd_test_iter
+    lw      a1, 0(t0)
+    addi    a1, a1, 1
+    sw      a1, 0(t0)
+    la      t0, sd_test_lba
+    lw      a0, 0(t0)
+    mv      a2, s9
+    call    sd_begin_block_write
+    beqz    a0, 5f
+    li      t0, SD_STATE_WRITE_BUSY
+    la      t1, sd_state
+    sw      t0, 0(t1)
+    j       sd_poll_done
+5:
+    li      t0, SD_TEST_INTERVAL_US
+    add     t0, s9, t0
+    la      t1, sd_timer_us
+    sw      t0, 0(t1)
+    j       sd_poll_done
+
+sd_st_write_busy:
+    li      a0, 0xFF
+    call    sd_spi_xfer
+    beqz    a0, 6f                          /* Still 0x00 -> card busy */
+
+    /* Programming complete! Measure elapsed ms and read+verify block */
+    la      t0, sd_write_start_us
+    lw      t0, 0(t0)
+    sub     t0, s9, t0
+    li      t1, 1000
+    divu    a2, t0, t1                      /* write_ms */
+    sw      a2, 12(sp)
+    call    sd_deselect_and_clock
+
+    la      t0, sd_test_lba
+    lw      a0, 0(t0)
+    la      t1, sd_test_iter
+    lw      a1, 0(t1)
+    lw      a2, 12(sp)
+    call    sd_read_and_verify_block
+
+    /* Advance rotating LBA ring (1024..1039) */
+    la      t0, sd_test_lba
+    lw      t1, 0(t0)
+    addi    t1, t1, 1
+    li      t2, (SD_TEST_LBA_BASE + SD_TEST_LBA_COUNT)
+    bltu    t1, t2, 7f
+    li      t1, SD_TEST_LBA_BASE
+7:
+    sw      t1, 0(t0)
+    li      t0, SD_TEST_INTERVAL_US
+    add     t0, s9, t0
+    la      t1, sd_timer_us
+    sw      t0, 0(t1)
+    li      t0, SD_STATE_READY
+    la      t1, sd_state
+    sw      t0, 0(t1)
+    j       sd_poll_done
+
+6:
+    la      t0, sd_deadline_us
+    lw      t0, 0(t0)
+    sub     t0, s9, t0
+    bltz    t0, sd_poll_done
+    call    sd_deselect_and_clock
+    la      a0, str_sd_wr_tmo
+    call    uart0_tx_enqueue_str
+    li      t0, SD_TEST_INTERVAL_US
+    add     t0, s9, t0
+    la      t1, sd_timer_us
+    sw      t0, 0(t1)
+    li      t0, SD_STATE_READY
+    la      t1, sd_state
+    sw      t0, 0(t1)
+
+sd_poll_done:
+    lw      s9, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+
+
+/* ============================================================================
  * 6. Read-Only Strings (.rodata in Flash)
  * ============================================================================ */
 .section .rodata, "a"
@@ -1212,7 +2531,7 @@ hex_digits:
     .ascii  "0123456789ABCDEF"
 
 str_boot_banner:
-    .asciz  "\r\n========================================\r\nPico 2 Desert Island - Bare-Metal ASM (2b)\r\n126 MHz | UART0 | DVI 640x480 | LEDs | PWM\r\n========================================\r\n"
+    .asciz  "\r\n========================================\r\nPico 2 Desert Island - Bare-Metal ASM (2c)\r\nUART0 | DVI 640x480 | CH9350 | SD SPI0\r\n========================================\r\n"
 
 str_hb_prefix:
     .asciz  "Heartbeat #"
@@ -1229,6 +2548,84 @@ str_rx_bin:
     .asciz  " bin=0b"
 str_crlf:
     .asciz  "\r\n"
+
+/* CH9350 log strings */
+str_hid_kbd:
+    .asciz  "[CH9350] KBD: mod=0x"
+str_hid_keys:
+    .asciz  " keys=["
+str_hid_mouse:
+    .asciz  "[CH9350] MOUSE: btn=0x"
+str_dx:
+    .asciz  " dx="
+str_dy:
+    .asciz  " dy="
+str_wheel:
+    .asciz  " wheel="
+str_hid_disc:
+    .asciz  "[CH9350] DEVICE_DISCONNECT (0x86)\r\n"
+str_hid_ver:
+    .asciz  "[CH9350] VERSION_QUERY (0x87)\r\n"
+str_hid_cmd:
+    .asciz  "[CH9350] CMD=0x"
+str_comma_sp:
+    .asciz  ", "
+str_0x:
+    .asciz  "0x"
+str_none:
+    .asciz  "none"
+str_rbrack_crlf:
+    .asciz  "]\r\n"
+
+/* SD card log strings */
+str_sd_boot_det:
+    .asciz  "[SD] Card detected on startup\r\n"
+str_sd_none:
+    .asciz  "[SD] No card detected (insert SD card to test)\r\n"
+str_sd_inserted:
+    .asciz  "[SD] Card inserted\r\n"
+str_sd_removed:
+    .asciz  "[SD] Card removed\r\n"
+str_sd_ready:
+    .asciz  "[SD] Ready: "
+str_sdhc:
+    .asciz  "SDHC/SDXC"
+str_sdsc:
+    .asciz  "SDSC"
+str_sd_blocks:
+    .asciz  " blocks ("
+str_sd_mib:
+    .asciz  " MiB), SPI0=12.6 MHz\r\n"
+str_sd_nocsd:
+    .asciz  ", capacity unknown, SPI0=12.6 MHz\r\n"
+str_sd_err_cmd0:
+    .asciz  "[SD] Init failed at CMD0\r\n"
+str_sd_err_cmd8:
+    .asciz  "[SD] Init failed at CMD8\r\n"
+str_sd_err_acmd41:
+    .asciz  "[SD] Init failed at ACMD41 timeout\r\n"
+str_sd_err_fin:
+    .asciz  "[SD] Init failed at CMD58/CMD16\r\n"
+str_sd_wr_fail:
+    .asciz  "[SD] WRITE LBA "
+str_sd_r1:
+    .asciz  " FAIL (resp=0x"
+str_rparen_crlf:
+    .asciz  ")\r\n"
+str_sd_wr_tmo:
+    .asciz  "[SD] WRITE FAIL (busy timeout)\r\n"
+str_sd_rd_fail:
+    .asciz  "[SD] READ FAIL LBA "
+str_sd_blk:
+    .asciz  "[SD] Block "
+str_hash:
+    .asciz  " #"
+str_sd_pass:
+    .asciz  " write+read+verify: PASS (512/512 B, wr="
+str_ms_crlf:
+    .asciz  " ms)\r\n"
+str_sd_mismatch:
+    .asciz  " VERIFY FAIL at byte "
 
 
 /* ============================================================================
@@ -1399,8 +2796,44 @@ box_dx:
     .word   0
 box_dy:
     .word   0
+ch9350_state:
+    .word   0
+ch9350_cmd:
+    .word   0
+ch9350_payload_len:
+    .word   0
+ch9350_payload_idx:
+    .word   0
+sd_state:
+    .word   0
+sd_cd_stable:
+    .word   0
+sd_cd_last_raw:
+    .word   0
+sd_cd_change_us:
+    .word   0
+sd_is_v2:
+    .word   0
+sd_is_sdhc:
+    .word   0
+sd_timer_us:
+    .word   0
+sd_deadline_us:
+    .word   0
+sd_write_start_us:
+    .word   0
+sd_test_iter:
+    .word   0
+sd_test_lba:
+    .word   0
+ch9350_payload:
+    .space  8
 uart_tx_ring:
     .space  UART_TX_RING_SIZE
+sd_tx_buf:
+    .space  SD_BLOCK_SIZE
+sd_rx_buf:
+    .space  SD_BLOCK_SIZE
 .p2align 2
 framebuffer:
     .space  FB_TOTAL_BYTES                  /* 38,400 bytes (640x480 1 bpp) */
