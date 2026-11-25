@@ -75,3 +75,33 @@ This single rule naturally covers every display use case without any mode-switch
 * **Core 1 Launch:** During Stage-1 hardware bring-up, Core 0 wakes Core 1 via the SIO inter-core FIFO mailbox handshake (`rp2350-datasheet.pdf §3.1.4, p. 46`; `§5.3, p. 331`), giving it its own private stack in non-striped Scratchpad SRAM Bank 9 (`0x2008_1000`–`0x2008_1FFF`, `rp2350-datasheet.pdf §4.2, p. 312`).
 * **Bus Contention:** The RP2350 AHB5 crossbar (`rp2350-datasheet.pdf §2.1, p. 23`) allows up to 6 simultaneous 32-bit transfers across the 4-way striped SRAM banks (`0x2000_0000`–`0x2007_FFFF`), and `BUSCTRL_BUS_PRIORITY` (`§2.1.1, p. 23`) can prioritize DMA/Core 1 if needed so Core 0 never stalls video output.
 * **VSYNC Synchronization:** Once per frame at the start of vertical blanking, Core 1 increments a shared monotonic 32-bit `vsync_count` word in BIOS SRAM. Core 0 reads this counter (via BIOS ABI `WAIT_VSYNC` / frame-counter service) for tear-free animation and 60 Hz pacing.
+
+---
+
+## 5. Future Work: Sprites
+
+Because Core 1 uses less than ~20% of its `4,000`-cycle scanline budget for `FRAMEBUF | FONT_RAM[TEXT_BUF]` compositing, the Video Coprocessor has ample RAM and timing headroom to add **hardware-style sprites and a floating mouse cursor** in a future revision—without taking a single byte from the 464 KB User SRAM.
+
+### RAM Headroom (Zero Impact on User SRAM)
+Two existing memory pockets can host sprite data without shrinking `USER_RAM`:
+1. **BIOS Growth Headroom (`0x2007_F700`–`0x2007_FFFF`):** `2,304` bytes already reserved at the top of Main SRAM.
+2. **Unused RP2350 USB DPRAM (`0x5010_0000`–`0x5010_0FFF`):** `4,096` bytes of single-cycle, zero-contention AHB data SRAM (`rp2350-datasheet.pdf §4.2.1, p. 312`), completely idle because Oasis32 uses the CH9350 and CP2102N rather than on-chip USB.
+
+A classic **32-sprite masked `16×16` engine** (with Sprite 0 acting as a hardware mouse cursor) fits cleanly in **`2,304` bytes**:
+* **Sprite Pattern RAM (`2,048` bytes):** `32` distinct `16×16` masked sprites (`2` bytes/row × `16` rows × `2` planes [pixels + transparency mask] = `64` bytes/sprite), enabling crisp opaque white-with-black-outline cursors and game sprites over any background. *(Or 64 unmasked OR/XOR sprites.)*
+* **OAM / Sprite Attribute Table (`256` bytes):** `32` simultaneous sprite slots × `8` bytes each:
+  * Packed 32-bit `[y:16 | x:16]` (signed coordinates for smooth off-screen clipping, updatable atomically in a single `sw` instruction)
+  * `tile_id` (1 byte), `flags` (1 byte: enable, masked/OR/XOR mode, H/V flip, layer priority relative to `TEXT_BUF`), and `2` reserved bytes.
+
+### Core 1 Scanline Timing Budget
+With ~`740` cycles/line spent on baseline compositing and DMA bookkeeping, Core 1 has ~`3,260` free cycles per scanline:
+1. **OAM Scanline Hit-Test (all 32 slots):** `32 × ~6` cycles ≈ **`192` cycles** (using unsigned `(y - sprite.y) < 16` to test both vertical bounds at once).
+2. **Per-Active-Sprite Compositing:** A 16-pixel sprite at arbitrary pixel `x` spans at most 3 bytes (`byte_col = x >> 3`, `shift = x & 7`) and composites directly into the Bank 9 line buffer via `line = (line & ~(mask << shift)) | (pixels << shift)` in **~25–35 cycles**.
+3. **Worst Case (all 32 sprites overlapping on the same scanline):**
+   $$740 + 192 + (32 \times 35) = 2{,}052\text{ cycles out of } 4{,}000\text{ (\~51\% of Core 1)}$$
+   This yields 32 simultaneous masked `16×16` sprites with **zero per-scanline drop-out or flicker** while leaving nearly half of Core 1 idle.
+
+### Frame-Latched vs. Dynamic (Beam-Racing) Updates
+A single control flag in the Video Control block (`LATCH_OAM`) can support both styles:
+* **Frame-Latched (default):** During VBLANK (~`180,000` idle cycles across 45 blanking lines), Core 1 copies the 256-byte OAM table into its private Bank 9 scratchpad (~130 cycles), guaranteeing tear-free frames and zero bus contention during active scanlines.
+* **Dynamic / Live Per-Scanline:** Core 1 reads OAM live on each scanline, enabling classic C64/Amiga raster tricks (sprite multiplexing for 100+ on-screen sprites, mid-screen splits) while still allowing atomic `(x, y)` updates via a single 32-bit word store.
