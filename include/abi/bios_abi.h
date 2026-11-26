@@ -49,10 +49,17 @@
 #define BIOS_BLK_LED                0x70
 
 /* ----------------------------------------------------------------------------
- * 0x00-0x0F: System Services (placeholder — to be designed incrementally)
+ * 0x00-0x0F: System Control Services
  * ----------------------------------------------------------------------------
- * Planned: SYS_VERSION, SYS_REBOOT, SYS_SET_OS_ECALL_HANDLER
+ *   BIOS_SYS_VERSION              ()           -> a0 = (maj<<16)|(min<<8)|pat
+ *   BIOS_SYS_REBOOT               ()           -> does not return (full reset)
+ *   BIOS_SYS_SET_OS_ECALL_HANDLER (a0=fn_ptr)  -> a0 = ERR_OK (0) or ERR_INVALID_ARG (-2)
+ *     Registers (or clears with 0) the Stage-2 OS dispatcher for a7 >= 0x0100.
+ *     Non-zero fn_ptr must be 2-byte aligned inside User SRAM.
  */
+#define BIOS_SYS_VERSION                0x00
+#define BIOS_SYS_REBOOT                 0x01
+#define BIOS_SYS_SET_OS_ECALL_HANDLER   0x02
 
 /* ----------------------------------------------------------------------------
  * 0x10-0x1F: Serial Console Services (UART0, fixed 115200 8N1)

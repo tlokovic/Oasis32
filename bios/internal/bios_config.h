@@ -14,6 +14,14 @@
 #define OASIS32_BIOS_CONFIG_H
 
 /* ----------------------------------------------------------------------------
+ * Oasis32 System ROM / BIOS Version (returned by BIOS_SYS_VERSION)
+ * ---------------------------------------------------------------------------- */
+#define BIOS_VERSION_MAJOR          0
+#define BIOS_VERSION_MINOR          1
+#define BIOS_VERSION_PATCH          0
+#define BIOS_VERSION_PACKED         ((BIOS_VERSION_MAJOR << 16) | (BIOS_VERSION_MINOR << 8) | BIOS_VERSION_PATCH)
+
+/* ----------------------------------------------------------------------------
  * XOSC (12 MHz) & PLL_SYS (126.000 MHz)
  *   f_vco = 12 MHz * 126 = 1512 MHz; f_out = 1512 / (6 * 2) = 126.000 MHz
  * ---------------------------------------------------------------------------- */

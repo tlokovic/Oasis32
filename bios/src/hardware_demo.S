@@ -123,7 +123,25 @@ hardware_demo:
     sw      s9, 68(sp)
     sw      s10, 64(sp)
 
-    la      a0, str_splash
+    /* Print startup splash with live BIOS_SYS_VERSION (vMAJ.MIN.PAT) */
+    la      a0, str_splash_top
+    call    demo_puts
+    li      a7, BIOS_SYS_VERSION
+    ecall
+    mv      s0, a0                      /* s0 = (maj << 16) | (min << 8) | pat */
+    srli    a0, s0, 16
+    andi    a0, a0, 0xFF
+    call    demo_print_u8_dec
+    li      a0, '.'
+    call    demo_putc
+    srli    a0, s0, 8
+    andi    a0, a0, 0xFF
+    call    demo_print_u8_dec
+    li      a0, '.'
+    call    demo_putc
+    andi    a0, s0, 0xFF
+    call    demo_print_u8_dec
+    la      a0, str_splash_bot
     call    demo_puts
 
     /* Draw static 1 px outer border + 20x15 (32x32) grid and initial XOR box */
@@ -1021,8 +1039,10 @@ demo_log_mouse_btn:
  * Read-Only Strings (.rodata in XIP Flash)
  * ============================================================================ */
 .section .rodata, "a"
-str_splash:
-    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites + KBD/Mouse)\r\n========================================\r\nReady. LEDs 1/s, DVI + Text + 16 Sprites, KBD/Mouse -> serial; type to echo:\r\n"
+str_splash_top:
+    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v"
+str_splash_bot:
+    .asciz "\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites + KBD/Mouse)\r\n========================================\r\nReady. LEDs 1/s, DVI + Text + 16 Sprites, KBD/Mouse -> serial; type to echo:\r\n"
 str_bounce_text:
     .asciz "Oasis32"
 

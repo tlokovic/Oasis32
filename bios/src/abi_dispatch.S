@@ -79,6 +79,7 @@ trap_sync_entry:
 
     /* ------------------------------------------------------------------------
      * Resident BIOS Service Dispatch (0x0000 - 0x00FF)
+     *   0x00-0x02: System Control Services (version, reboot, OS ecall hook)
      *   0x10-0x13: Serial Console Services (UART0)
      *   0x20-0x22: Video / VSYNC Services (Core 1 Video Coprocessor)
      *   0x30-0x3F: Input Services (Keyboard & Mouse over UART1 CH9350)
@@ -86,6 +87,12 @@ trap_sync_entry:
      *   0x60:      Audio Services (Piezo Buzzer)
      *   0x70-0x71: Status LED Services (Red/Green/Blue)
      * ------------------------------------------------------------------------ */
+    li      t0, BIOS_SYS_VERSION
+    beq     a7, t0, svc_sys_version
+    li      t0, BIOS_SYS_REBOOT
+    beq     a7, t0, svc_sys_reboot
+    li      t0, BIOS_SYS_SET_OS_ECALL_HANDLER
+    beq     a7, t0, svc_sys_set_os_handler
     li      t0, BIOS_SERIAL_READ
     beq     a7, t0, svc_serial_read
     li      t0, BIOS_SERIAL_TRY_READ
@@ -134,6 +141,18 @@ trap_sync_entry:
     beq     a7, t0, svc_led_read
 
     li      a0, ERR_UNSUPPORTED
+    j       ecall_return
+
+svc_sys_version:
+    call    sys_version
+    j       ecall_return
+
+svc_sys_reboot:
+    call    sys_reboot
+    j       ecall_return
+
+svc_sys_set_os_handler:
+    call    sys_set_os_ecall_handler
     j       ecall_return
 
 svc_serial_read:

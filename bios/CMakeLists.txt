@@ -11,6 +11,7 @@ cmake_minimum_required(VERSION 3.13)
 oasis32_add_bios_executable(oasis32_bios
     src/boot.S
     src/clocks.S
+    src/sys.S
     src/timer.S
     src/leds.S
     src/piezo.S

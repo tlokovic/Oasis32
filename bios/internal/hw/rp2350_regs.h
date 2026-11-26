@@ -27,6 +27,7 @@
  * Peripheral Base Addresses (validated on RP2350 silicon in Phase 2)
  * ---------------------------------------------------------------------------- */
 #define CLOCKS_BASE                 0x40010000  /* §8.1.7, p. 481 */
+#define PSM_BASE                    0x40018000  /* §7.4.4, p. 455 */
 #define RESETS_BASE                 0x40020000  /* §7.5.3, p. 459 */
 #define IO_BANK0_BASE               0x40028000  /* §9.11.1, p. 549 */
 #define PADS_BANK0_BASE             0x40038000  /* §9.11.3, p. 694 */
@@ -39,6 +40,7 @@
 #define PWM_BASE                    0x400A8000  /* §12.5.3, p. 984 */
 #define TIMER0_BASE                 0x400B0000  /* §12.8.5, p. 1099 */
 #define HSTX_CTRL_BASE              0x400C0000  /* §12.11.7, p. 1120 */
+#define WATCHDOG_BASE               0x400D8000  /* §12.9.6, p. 1107 */
 #define TICKS_BASE                  0x40108000  /* §8.5.2, p. 522 */
 
 #define DMA_BASE                    0x50000000  /* §12.6.10, p. 1025 */
@@ -233,6 +235,17 @@
 #define DMA_INTE0_OFF               0x404
 #define DMA_INTS0_OFF               0x40C
 #define DMA_MULTI_TRIG_OFF          0x450
+
+/* ----------------------------------------------------------------------------
+ * PSM & WATCHDOG Registers (§7.4.4, pp. 455-458; §12.9.6, pp. 1107-1108)
+ * ---------------------------------------------------------------------------- */
+#define PSM_WDSEL_OFF               0x008
+/* Reset all PSM domains except ROSC (bit 2) and XOSC (bit 3) */
+#define PSM_WDSEL_FULL_RESET        0x01FFFFF3
+
+#define WATCHDOG_CTRL_OFF           0x000
+#define WATCHDOG_SCRATCH4_OFF       0x01C
+#define WATCHDOG_CTRL_TRIGGER_BIT   (1 << 31)
 
 /* ----------------------------------------------------------------------------
  * Hazard3 Standard & Xh3irq CSRs (hazard3-manual.pdf §4.1, pp. 38-43)
