@@ -18,6 +18,7 @@ oasis32_add_bios_executable(oasis32_bios
     src/font.S
     src/video.S
     src/abi_dispatch.S
+    src/startup_tune.S
     src/hardware_demo.S
     src/main.S
 )

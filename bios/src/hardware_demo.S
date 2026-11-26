@@ -28,7 +28,7 @@
 #define DEMO_LED_INTERVAL_US        1000000
 #define DEMO_PIEZO_PERIOD_US        3000000
 #define DEMO_PIEZO_DURATION_US      100000
-#define DEMO_PIEZO_FREQ_HZ          1000
+#define DEMO_PIEZO_FREQ_HZ          0 // 1000
 #define DEMO_VIDEO_STEP_US          16667   /* ~60 px/s (1 px per 60 Hz frame) */
 #define DEMO_TEXT_STEP_US           125000  /* 8 cells/s (64 px/s) */
 
@@ -193,7 +193,7 @@ hardware_demo:
     /* Trigger initial 100 ms @ 1 kHz beep on boot, then repeat every 3 s */
     li      a0, DEMO_PIEZO_FREQ_HZ
     li      a7, BIOS_AUDIO_TONE
-    ecall
+    //ecall
     li      s5, 1
     li      t0, DEMO_PIEZO_DURATION_US
     add     s4, s0, t0                  /* s4 = piezo_stop_us */

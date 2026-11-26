@@ -14,6 +14,7 @@
 .global bios_main
 .type bios_main, @function
 bios_main:
+    call    play_startup_tune
     call    hardware_demo
 1:
     wfi
