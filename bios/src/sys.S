@@ -74,8 +74,8 @@ sys_set_os_ecall_handler:
     bnez    t0, 2f
     li      t0, USER_RAM_BASE
     bltu    a0, t0, 2f
-    li      t0, USER_RAM_END
-    bgeu    a0, t0, 2f
+    li      t0, (USER_RAM_BASE + USER_RAM_SIZE - 2)
+    bgtu    a0, t0, 2f
 1:
     li      t0, BIOS_OS_ECALL_HANDLER_ADDR
     sw      a0, 0(t0)

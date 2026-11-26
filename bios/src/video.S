@@ -43,8 +43,8 @@
 #define CMD_VBLANK_OFF_OFF          0x00    /* 6 words (24 B) */
 #define CMD_VBLANK_ON_OFF           0x18    /* 6 words (24 B) */
 #define CMD_VACTIVE_PRE_OFF         0x30    /* 7 words (28 B) */
-#define CMD_BEHIND_LIST_OFF         0x50    /* 33 B: enabled BEHIND_TEXT=1 slot offs + 0xFF */
-#define CMD_FRONT_LIST_OFF          0x74    /* 33 B: enabled BEHIND_TEXT=0 slot offs + 0xFF */
+#define CMD_BEHIND_LIST_OFF         0x50    /* 17 B: enabled BEHIND_TEXT=1 slot offs + 0xFF */
+#define CMD_FRONT_LIST_OFF          0x74    /* 17 B: enabled BEHIND_TEXT=0 slot offs + 0xFF */
 #define CMD_LIST_TOTAL_WORDS        19      /* 76 bytes of Flash DMA cmd lists */
 #define SPR_LIST_END                0xFF    /* Sentinel terminating Bank 9 sprite lists */
 
@@ -306,7 +306,7 @@ core1_video_entry:
     li      t1, 0x3
     sw      t1, DMA_INTR_OFF(s0)
 
-    /* Zero Bank 9 latched OAM mirror (256 B) and terminate sprite lists */
+    /* Zero Bank 9 latched OAM mirror (128 B) and terminate sprite lists */
     li      t0, BIOS_CORE1_OAM_LATCH
     li      t1, BIOS_CORE1_OAM_LATCH + VIDEO_SPRITE_OAM_SIZE
 10:
@@ -391,9 +391,9 @@ wait_dma_ch:
     /* Compose active scanline y = (v_scanline - 45) into Bank 9 buffer s4
      * in 4 deterministic layers (docs/VideoArchitecture.md §5.3):
      *   1. FRAMEBUF (20 words = 80 bytes)
-     *   2. Behind-text sprites (BEHIND_TEXT = 1, Slot 31 -> Slot 0)
+     *   2. Behind-text sprites (BEHIND_TEXT = 1, Slot 15 -> Slot 0)
      *   3. TEXT_BUF / FONT_RAM (OR-composited across 80 columns)
-     *   4. In-front sprites (BEHIND_TEXT = 0, Slot 31 -> Slot 0) */
+     *   4. In-front sprites (BEHIND_TEXT = 0, Slot 15 -> Slot 0) */
     addi    a5, s2, -CFG_MODE_V_BLANK_END   /* a5 = active_y (0..479) */
     li      t3, VIDEO_STRIDE_BYTES          /* 80 bytes/row */
 
@@ -409,7 +409,7 @@ compose_fb_loop:
     addi    a3, a3, 4
     bltu    a3, a4, compose_fb_loop
 
-    /* Layer 2: Behind-text sprites (BEHIND_TEXT = 1, Slot 31 -> Slot 0) */
+    /* Layer 2: Behind-text sprites (BEHIND_TEXT = 1, Slot 15 -> Slot 0) */
     mv      a0, a5                          /* y */
     mv      a1, s4                          /* line_buf */
     mv      a2, s10                         /* active_oam_base */
@@ -465,7 +465,7 @@ compose_text_next4:
     addi    a3, a3, 4
     bltu    a3, a4, compose_text_word_loop
 
-    /* Layer 4: In-front sprites (BEHIND_TEXT = 0, Slot 31 -> Slot 0) */
+    /* Layer 4: In-front sprites (BEHIND_TEXT = 0, Slot 15 -> Slot 0) */
     mv      a0, a5                          /* y */
     mv      a1, s4                          /* line_buf */
     mv      a2, s10                         /* active_oam_base */
@@ -520,11 +520,11 @@ line_vblank_off:
 /* ----------------------------------------------------------------------------
  * core1_vblank_latch_oam:
  *   Runs once per frame on VBLANK line 0 (4,000 idle cycles available).
- *   If VIDEO_CTRL.LATCH_OAM == 1, copies SPRITE_OAM (256 B) into Bank 9
+ *   If VIDEO_CTRL.LATCH_OAM == 1, copies SPRITE_OAM (128 B) into Bank 9
  *   (BIOS_CORE1_OAM_LATCH), sets s10 = BIOS_CORE1_OAM_LATCH, and builds the
  *   compact enabled-slot lists at CMD_BEHIND_LIST_OFF and CMD_FRONT_LIST_OFF
- *   (in Slot 31 -> Slot 0 order). If LATCH_OAM == 0 (live beam-racing), sets
- *   s10 = VIDEO_SPRITE_OAM_BASE and populates both lists with all 32 slots.
+ *   (in Slot 15 -> Slot 0 order). If LATCH_OAM == 0 (live beam-racing), sets
+ *   s10 = VIDEO_SPRITE_OAM_BASE and populates both lists with all 16 slots.
  * ---------------------------------------------------------------------------- */
 .p2align 2
 .type core1_vblank_latch_oam, @function
@@ -534,7 +534,7 @@ core1_vblank_latch_oam:
     andi    t1, t1, VIDEO_CTRL_LATCH_OAM_BIT
     beqz    t1, latch_live_mode
 
-    /* Frame-latched mode: copy 64 words SPRITE_OAM -> Bank 9 mirror */
+    /* Frame-latched mode: copy 32 words SPRITE_OAM -> Bank 9 mirror */
     li      t0, VIDEO_SPRITE_OAM_BASE
     li      t1, BIOS_CORE1_OAM_LATCH
     li      t2, BIOS_CORE1_OAM_LATCH + VIDEO_SPRITE_OAM_SIZE
@@ -546,10 +546,10 @@ core1_vblank_latch_oam:
     bltu    t1, t2, 1b
     li      s10, BIOS_CORE1_OAM_LATCH
 
-    /* Partition enabled slots (31 -> 0) into behind_list & front_list */
+    /* Partition enabled slots (15 -> 0) into behind_list & front_list */
     addi    t0, s5, CMD_BEHIND_LIST_OFF     /* behind write ptr */
     addi    t1, s5, CMD_FRONT_LIST_OFF      /* front write ptr */
-    li      t2, (SPRITE_OAM_COUNT - 1) * SPRITE_OAM_STRIDE  /* 248 down to 0 */
+    li      t2, (SPRITE_OAM_COUNT - 1) * SPRITE_OAM_STRIDE  /* 120 down to 0 */
 2:
     add     t3, s10, t2
     lbu     t4, SPRITE_OAM_OFF_FLAGS(t3)
@@ -573,7 +573,7 @@ core1_vblank_latch_oam:
     ret
 
 latch_live_mode:
-    /* Dynamic / beam-racing mode: read live SPRITE_OAM, scan all 32 slots */
+    /* Dynamic / beam-racing mode: read live SPRITE_OAM, scan all 16 slots */
     li      s10, VIDEO_SPRITE_OAM_BASE
     addi    t0, s5, CMD_BEHIND_LIST_OFF
     addi    t1, s5, CMD_FRONT_LIST_OFF
@@ -593,7 +593,7 @@ latch_live_mode:
 
 /* ----------------------------------------------------------------------------
  * core1_draw_sprite_list(a0=y, a1=line_buf, a2=oam_base, a3=list_ptr):
- *   Walks the 0xFF-terminated Bank 9 slot-offset list (Slot 31 -> Slot 0).
+ *   Walks the 0xFF-terminated Bank 9 slot-offset list (Slot 15 -> Slot 0).
  *   For each sprite covering scanline `y`, fetches its 16-bit pixel & mask
  *   row from VIDEO_SPRITE_PAT_BASE (in s11), applies VFLIP/HFLIP, clips
  *   horizontally to [0..639], and blends (OPAQUE / OR / XOR) into `line_buf`.
@@ -624,7 +624,7 @@ spr_list_loop:
     sw      t2, 4(sp)
 
 spr_slot_loop:
-    lbu     t2, 0(a3)                       /* slot byte offset (0..248) or 0xFF */
+    lbu     t2, 0(a3)                       /* slot byte offset (0..120) or 0xFF */
     li      t3, SPR_LIST_END
     beq     t2, t3, spr_list_done
     add     a4, a2, t2                      /* a4 = &oam_base[slot] */
@@ -646,7 +646,7 @@ spr_slot_loop:
     li      t3, VIDEO_WIDTH
     bge     t2, t3, spr_next_slot
 
-    /* Pattern index bounds check (0..55) */
+    /* Pattern index bounds check (0..57) */
     lbu     t3, SPRITE_OAM_OFF_PAT(a4)
     bgeu    t3, a7, spr_next_slot
 

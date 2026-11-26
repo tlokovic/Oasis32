@@ -63,7 +63,7 @@ play_note:
 
 /* ----------------------------------------------------------------------------
  * play_startup_tune():
- *   Plays a 7-note ascending C-major-7th boot chime (~1.05 s total) from
+ *   Plays a 5-note C-major boot chime (580 ms total) from
  *   startup_tune_notes (terminated by duration_ms == 0).
  * ---------------------------------------------------------------------------- */
 .global play_startup_tune
@@ -90,7 +90,7 @@ play_startup_tune:
 
 /* ============================================================================
  * Startup Tune Note Table: { uint16_t freq_hz, uint16_t duration_ms }
- *   7-note C5 -> E5 -> G5 -> B5 -> C6, G5 -> C6 chime (1,050 ms total)
+ *   5-note C5 -> E5 -> G5 -> C6 -> G5 chime (580 ms total)
  * ============================================================================ */
 .section .rodata, "a"
 .p2align 2

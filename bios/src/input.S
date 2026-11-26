@@ -26,6 +26,7 @@
  * ============================================================================
  */
 
+#include "abi/memory_map.h"
 #include "abi/bios_abi.h"
 #include "abi/devices.h"
 #include "hw/rp2350_regs.h"
@@ -620,7 +621,11 @@ input_kbd_flush:
 .global input_kbd_state
 .type input_kbd_state, @function
 input_kbd_state:
-    beqz    a0, 2f                          /* NULL pointer -> ERR_INVALID_ARG */
+    /* Validate [dst_ptr, dst_ptr + KEY_STATE_BUF_SIZE) inside User SRAM */
+    li      t0, USER_RAM_BASE
+    bltu    a0, t0, 2f
+    li      t0, (USER_RAM_BASE + USER_RAM_SIZE - KEY_STATE_BUF_SIZE)
+    bgtu    a0, t0, 2f
     mv      t5, a0                          /* t5 = dst_ptr */
 
     csrrci  t6, mstatus, MSTATUS_MIE_BIT

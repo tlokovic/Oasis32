@@ -14,7 +14,7 @@
  *         - Restores mstatus/mepc with MIE=0, returns via mret
  *       * Other mcause -> BIOS fault halt (reports fault over UART0)
  *   - BASE + 0x2C (Cause 11: MEIP / Xh3irq):
- *       * Placeholder for Core 0 peripheral IRQs (swaps sp <-> mscratch)
+ *       * Core 0 peripheral IRQs (IRQ 34 / UART1_IRQ; swaps sp <-> mscratch)
  *
  * References:
  *   - riscv-privileged.pdf §3.1.6-§3.1.12 (mstatus, mtvec, mepc, mcause)
@@ -83,6 +83,7 @@ trap_sync_entry:
      *   0x10-0x13: Serial Console Services (UART0)
      *   0x20-0x22: Video / VSYNC Services (Core 1 Video Coprocessor)
      *   0x30-0x3F: Input Services (Keyboard & Mouse over UART1 CH9350)
+     *   0x40-0x44: Storage Services (SD Card over SPI0)
      *   0x50:      Timer Services (TIMER0 1 us monotonic clock)
      *   0x60:      Audio Services (Piezo Buzzer)
      *   0x70-0x71: Status LED Services (Red/Green/Blue)
@@ -300,16 +301,67 @@ ecall_return:
 .size trap_sync_entry, . - trap_sync_entry
 
 /* ============================================================================
- * 3. Unhandled Synchronous Fault & Placeholder IRQ Handlers
+ * 3. Unhandled Synchronous Fault & Hardware IRQ Handlers
  * ============================================================================ */
 .type trap_fault, @function
 trap_fault:
+    /* Switch to known-good Bank 8 BIOS stack in case faulting sp is corrupt */
+    li      sp, BIOS_CORE0_IRQ_STACK_TOP
+    csrr    s0, mcause
+    csrr    s1, mepc
+    csrr    s2, mtval
+
     la      a0, str_bios_fault
+    call    uart0_puts
+    mv      a0, s0
+    call    trap_print_hex32
+
+    la      a0, str_fault_mepc
+    call    uart0_puts
+    mv      a0, s1
+    call    trap_print_hex32
+
+    la      a0, str_fault_mtval
+    call    uart0_puts
+    mv      a0, s2
+    call    trap_print_hex32
+
+    la      a0, str_fault_crlf
     call    uart0_puts
 1:
     wfi
     j       1b
 .size trap_fault, . - trap_fault
+
+/* trap_print_hex32(a0 = uint32_t): prints 8 uppercase hex digits via uart0_write */
+.type trap_print_hex32, @function
+trap_print_hex32:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s0, 8(sp)
+    sw      s1, 4(sp)
+    mv      s0, a0
+    li      s1, 28
+1:
+    srl     a0, s0, s1
+    andi    a0, a0, 0x0F
+    li      t0, 10
+    bltu    a0, t0, 2f
+    addi    a0, a0, ('A' - 10)
+    j       3f
+2:
+    addi    a0, a0, '0'
+3:
+    call    uart0_write
+    addi    s1, s1, -4
+    bgez    s1, 1b
+
+    lw      s1, 4(sp)
+    lw      s0, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+.size trap_print_hex32, . - trap_print_hex32
 
 .type trap_meip_entry, @function
 trap_meip_entry:
@@ -368,4 +420,10 @@ trap_unhandled_irq:
 
 .section .rodata, "a"
 str_bios_fault:
-    .asciz "\r\n[BIOS FATAL] Unhandled synchronous trap.\r\n"
+    .asciz "\r\n[BIOS FATAL] Unhandled sync trap: mcause=0x"
+str_fault_mepc:
+    .asciz " mepc=0x"
+str_fault_mtval:
+    .asciz " mtval=0x"
+str_fault_crlf:
+    .asciz "\r\n"

@@ -81,7 +81,7 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 Because Oasis32 uses the CH9350 ASIC for keyboard/mouse and CP2102N for serial, the RP2350's on-chip USB controller remains disabled and its **4,096-byte dual-port SRAM (`USBCTRL_DPRAM_BASE = 0x5010_0000`)** is available as general-purpose data RAM (`rp2350-datasheet.pdf §12.7.1.1.3, pp. 1058–1059`).
 
 * **Hardware properties:** Accessible by Core 0, Core 1, and DMA over AHB5 with zero Main SRAM bank contention; supports 8/16/32-bit reads (2 cycles) and writes (1 cycle); strictly **non-executable** (data-only, `§4.2.1, p. 312`).
-* **Startup requirement:** Deassert `USBCTRL` in `RESETS->RESET` and poll `RESETS->RESET_DONE` before accessing `0x5010_0000` (the USB controller stays disabled; `PLL_USB`/`clk_usb` are not needed).
+* **Startup requirement:** Enable `clk_usb` from 12 MHz `XOSC` (no `PLL_USB` needed) so `RESETS->RESET_DONE.USBCTRL` can assert, then deassert `USBCTRL` in `RESETS->RESET` and poll `RESETS->RESET_DONE` before accessing `0x5010_0000` (the USB controller itself stays disabled).
 * **Architectural payoff:** Moving all BIOS-private driver state into USB DPRAM physically isolates BIOS variables from User SRAM/Video RAM and leaves **100% of the 512 KB Main SRAM** user-facing (464 KB User SRAM + 48 KB Video & Future Sprite Reserve).
 
 | Sub-Region | Address Range | Size | Purpose |

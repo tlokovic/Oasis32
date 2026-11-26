@@ -662,7 +662,7 @@ sd_read:
     /* Validate [buf_ptr, buf_ptr + 512) inside User SRAM */
     li      t0, USER_RAM_BASE
     bltu    s1, t0, sd_read_inval
-    li      t0, (USER_RAM_END - SD_SECTOR_SIZE)
+    li      t0, (USER_RAM_BASE + USER_RAM_SIZE - SD_SECTOR_SIZE)
     bgtu    s1, t0, sd_read_inval
 
     /* Validate lba < sectors (when capacity is known) */
@@ -735,7 +735,7 @@ sd_write:
     /* Validate [buf_ptr, buf_ptr + 512) inside User SRAM */
     li      t0, USER_RAM_BASE
     bltu    s1, t0, sd_write_inval
-    li      t0, (USER_RAM_END - SD_SECTOR_SIZE)
+    li      t0, (USER_RAM_BASE + USER_RAM_SIZE - SD_SECTOR_SIZE)
     bgtu    s1, t0, sd_write_inval
 
     /* Validate lba < sectors (when capacity is known) */

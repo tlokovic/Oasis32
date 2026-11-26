@@ -132,7 +132,7 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * Authored the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
 * Authored the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
 
-### Sub-Phase 3b (IN PROGRESS): Subsystem-by-Subsystem Driver & `ecall` ABI Bring-Up (`hardware_demo`)
+### Sub-Phase 3b (COMPLETE): Subsystem-by-Subsystem Driver & `ecall` ABI Bring-Up (`hardware_demo`)
 Rather than implementing all drivers first and wiring the `ecall` ABI afterward, Phase 3b brings up **one subsystem at a time**—implementing its resident driver under `bios/src/`, finalizing its public `ecall` contract in `include/abi/`, wiring it into the Vectored `mtvec` dispatcher (`bios/src/abi_dispatch.S`), and immediately validating it on hardware via `bios/src/hardware_demo.S` called from `bios/src/main.S`.
 
 * **Strict ABI Validation Rule:** `bios/src/hardware_demo.S` reconstructs the full Phase 2 test harness behaviors using **only** `include/abi/` headers and `ecall` BIOS calls (zero `bios/internal/` includes or direct MMIO). Once all subsystems are validated, `hardware_demo.S` remains permanently resident in the System ROM as boot menu option `3`, providing rapid on-device diagnostics and regression testing across future BIOS cleanups and refactorings.
@@ -143,12 +143,12 @@ Rather than implementing all drivers first and wiring the `ecall` ABI afterward,
   * [x] **Monotonic Timer (`timer.S`):** `TICKS` 1 MHz + `TIMER0` atomic 64-bit `BIOS_TIME_US` (`0x50`) — verified in `hardware_demo.S`.
   * [x] **Status LEDs (`leds.S`):** `BIOS_LED_WRITE` (`0x70`), `BIOS_LED_READ` (`0x71`) — verified in `hardware_demo.S` (non-blocking 1 s Red → Green → Blue cycle).
   * [x] **Piezo Buzzer (`piezo.S`):** `PWM3 A` `BIOS_AUDIO_TONE` (`0x60`, `0` = off, `16..20000` Hz) — verified in `hardware_demo.S` (non-blocking 100 ms @ 1 kHz beep every 3 s).
-  * [ ] **Keyboard / Mouse (`UART1` CH9350):** Define `BIOS_BLK_INPUT` (`0x30`) ABI, implement resident driver (and Core 0 `Xh3irq` buffering on the `mscratch` stack if needed), and add HID event logging to `hardware_demo.S`.
-  * [ ] **SD Card Block I/O (`SPI0` + `GP6` card detect):** Define `BIOS_BLK_SD` (`0x40`) ABI, implement resident block driver, and add rotating 512-byte write/read/verify to `hardware_demo.S`.
+  * [x] **Keyboard / Mouse (`UART1` CH9350):** Define `BIOS_BLK_INPUT` (`0x30`) ABI, implement resident driver (and Core 0 `Xh3irq` buffering on the `mscratch` stack if needed), and add HID event logging to `hardware_demo.S`.
+  * [x] **SD Card Block I/O (`SPI0` + `GP6` card detect):** Define `BIOS_BLK_SD` (`0x40`) ABI, implement resident block driver, and add rotating 512-byte write/read/verify to `hardware_demo.S`.
   * [x] **Core 1 Video Coprocessor — Bitmap Framebuffer (`video.S`, `HSTX` + ping-pong DMA):** Launch Core 1 via SIO FIFO (private stack & ping-pong line buffers in Scratchpad Bank 9), stream `640×480` 1 bpp `FRAMEBUF`, maintain VSYNC frame counter, and validate border/grid/XOR box in `hardware_demo.S`.
   * [x] **Core 1 Video Coprocessor — Text Overlay (`TEXT_BUF` + `FONT_RAM`):** Initialize `FONT_RAM` from default Flash 8×8 font, OR-composite `FRAMEBUF | FONT_RAM[TEXT_BUF]` per scanline on Core 1, define `BIOS_BLK_VIDEO` (`0x20`) ABI, and validate text overlay in `hardware_demo.S`.
   * [x] **Core 1 Video Coprocessor — Hardware Sprites (`SPRITE_OAM` + `SPRITE_PAT`):** Implement `VIDEO_CTRL.LATCH_OAM` frame-latching and 16 masked `16×16` hardware sprites (behind-text & in-front layers across 58 patterns) on Core 1, and validate sprites in `hardware_demo.S`.
-  * [ ] **System Control (`BIOS_BLK_SYS` `0x00`):** Define and implement `SYS_VERSION`, `SYS_REBOOT`, and `SYS_SET_OS_ECALL_HANDLER`.
+  * [x] **System Control (`BIOS_BLK_SYS` `0x00`):** Define and implement `SYS_VERSION`, `SYS_REBOOT`, and `SYS_SET_OS_ECALL_HANDLER`.
 
 ### Sub-Phase 3c: Interactive Boot Menu, Base64 Serial Loader & Stage-1 SD Bootloader
 Once all BIOS syscalls are validated via `hardware_demo.S`, update `bios/src/main.S` to present the interactive boot menu (keeping `hardware_demo()` accessible as menu option `3`) and implement the Stage-1 loaders:

@@ -115,7 +115,7 @@
  *   s8  = box_y          (1..447)
  *   s9  = box_dx         (+1 or -1)
  *   s10 = box_dy         (+1 or -1)
- *   sp+0..29 = bouncing text & 6-sprite demo state
+ *   sp+0..59 = bouncing text, 16-sprite & SD demo state
  * ---------------------------------------------------------------------------- */
 .global hardware_demo
 .type hardware_demo, @function
@@ -386,7 +386,7 @@ check_video:
 4:
     add     s8, s8, s10
 
-    /* Draw new box, step the 6 bouncing sprites, and advance deadline */
+    /* Draw new box, step the 16 bouncing sprites, and advance deadline */
     mv      a0, s7
     mv      a1, s8
     call    demo_fb_xor_box
@@ -508,11 +508,11 @@ demo_text_clear:
 .size demo_text_clear, . - demo_text_clear
 
 /* ----------------------------------------------------------------------------
- * demo_sprites_init(a0 = int8_t dy[32] buffer):
+ * demo_sprites_init(a0 = int8_t dy[16] buffer):
  *   Copies the 64-byte 16x16 'R' pattern into VIDEO_SPRITE_PAT_BASE (pat 0),
- *   and initializes all 32 OAM slots evenly across x = 2 + i*20 at y = 232
- *   covering all 24 (behind/front) x (OPAQUE/OR/XOR) x (4 flip) combinations
- *   plus 8 repeats, with harmonic vertical speeds (1x, 2x, 4x, alternating +/-).
+ *   and initializes all 16 OAM slots evenly across x = 12 + i*40 at y = 232
+ *   cycling through all 6 (in-front/behind-text) x (OPAQUE/OR/XOR) modes,
+ *   with harmonic vertical speeds (1x, 2x, 4x, alternating +/-).
  * ---------------------------------------------------------------------------- */
 .type demo_sprites_init, @function
 demo_sprites_init:
@@ -585,10 +585,10 @@ demo_sprites_init:
 .size demo_sprites_init, . - demo_sprites_init
 
 /* ----------------------------------------------------------------------------
- * demo_sprites_step(a0 = int8_t dy[32]):
- *   Steps all 32 OAM slots vertically at 1x/2x/4x speeds within [4..460].
- *   Because 228 is divisible by 1, 2, and 4, all 32 reconverge at y = 232
- *   every 456 frames (~7.6 s), exercising the full 32-sprite scanline peak.
+ * demo_sprites_step(a0 = int8_t dy[16]):
+ *   Steps all 16 OAM slots vertically at 1x/2x/4x speeds within [4..460].
+ *   Because 228 is divisible by 1, 2, and 4, all 16 reconverge at y = 232
+ *   every 456 frames (~7.6 s), exercising the full 16-sprite scanline peak.
  * ---------------------------------------------------------------------------- */
 .type demo_sprites_step, @function
 demo_sprites_step:
