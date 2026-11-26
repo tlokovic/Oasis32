@@ -95,6 +95,16 @@ hardware_demo:
     mv      a1, s8
     call    demo_fb_xor_box
 
+    /* Fill 80x60 VIDEO_TEXT_BUF_BASE with 'X' (0x58) to visualize cell alignment;
+     * bouncing "Oasis32" clears cells to 0x00 as it passes over them. */
+    li      t0, VIDEO_TEXT_BUF_BASE
+    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+    li      t2, 0x58585858              /* "XXXX" */
+1:
+    sw      t2, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t1, 1b
+
     /* Place initial "Oasis32" text overlay at top-right corner (col=72, row=1) */
     li      t0, DEMO_TEXT_MAX_COL
     sw      t0, STK_TEXT_COL(sp)
