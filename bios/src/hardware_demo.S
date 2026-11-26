@@ -409,7 +409,8 @@ demo_text_write:
 
 /* ----------------------------------------------------------------------------
  * demo_text_clear(a0 = col, a1 = row, a2 = count):
- *   Writes `count` transparent 0x00 cells into VIDEO_TEXT_BUF_BASE at (col, row).
+ *   Writes `count` CP437 0xB0 (light shade) cells into VIDEO_TEXT_BUF_BASE at
+ *   (col, row) so all 80 columns stay non-zero (maximum Core 1 text load).
  * ---------------------------------------------------------------------------- */
 .type demo_text_clear, @function
 demo_text_clear:
@@ -418,9 +419,10 @@ demo_text_clear:
     add     t0, t0, a0
     li      t1, VIDEO_TEXT_BUF_BASE
     add     t0, t1, t0
+    li      t2, 0xB0                    /* CP437 light shade */
 1:
     beqz    a2, 2f
-    sb      zero, 0(t0)
+    sb      t2, 0(t0)
     addi    t0, t0, 1
     addi    a2, a2, -1
     j       1b
