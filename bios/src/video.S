@@ -14,9 +14,10 @@
  *     line buffer to HSTX_FIFO. Increments BIOS_VSYNC_COUNT_ADDR once per
  *     frame at the start of VBLANK.
  *
- * Scope (Phase 3b — Bitmap Framebuffer Bring-Up):
- *   - Bitmap framebuffer scanout only (TEXT_BUF/FONT_RAM overlay and hardware
- *     sprites will drop directly into `core1_compose_scanline` in a follow-up).
+ * Scope (Phase 3b — Bitmap Framebuffer + Text Overlay):
+ *   - Unified OR-compositing of FRAMEBUF | FONT_RAM[TEXT_BUF] per scanline.
+ *   - Hardware sprites (SPRITE_OAM / SPRITE_PAT) will plug into the same
+ *     Bank 9 scanline compositing stage in the next step.
  *
  * Primary References:
  *   - docs/VideoArchitecture.md §2, §4
@@ -76,6 +77,17 @@ video_init:
     sw      zero, 0(t0)
     addi    t0, t0, 4
     bltu    t0, t1, 1b
+
+    /* 1b. Load default CP437 8x8 Flash font into VIDEO_FONT_RAM_BASE (2,048 B)
+     *     and clear 80x60 VIDEO_TEXT_BUF_BASE (4,800 B) to transparent 0x00. */
+    call    font_load_default
+
+    li      t0, VIDEO_TEXT_BUF_BASE
+    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+2:
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t1, 2b
 
     /* 2. Build 6-word Core 1 launch sequence in stack/rodata-free registers.
      *    We store the 6 words on Core 0's stack at 0(sp)..20(sp) — Wait:
@@ -145,6 +157,31 @@ wait_core1_ready:
     ret
 .size video_init, . - video_init
 
+/* ----------------------------------------------------------------------------
+ * video_frame_count() -> a0 = uint32_t monotonic VSYNC frame counter
+ * ---------------------------------------------------------------------------- */
+.global video_frame_count
+.type video_frame_count, @function
+video_frame_count:
+    li      t0, BIOS_VSYNC_COUNT_ADDR
+    lw      a0, 0(t0)
+    ret
+.size video_frame_count, . - video_frame_count
+
+/* ----------------------------------------------------------------------------
+ * video_wait_vsync() -> a0 = uint32_t new VSYNC frame counter (blocks ~<=16.7ms)
+ * ---------------------------------------------------------------------------- */
+.global video_wait_vsync
+.type video_wait_vsync, @function
+video_wait_vsync:
+    li      t0, BIOS_VSYNC_COUNT_ADDR
+    lw      t1, 0(t0)
+1:
+    lw      a0, 0(t0)
+    beq     a0, t1, 1b
+    ret
+.size video_wait_vsync, . - video_wait_vsync
+
 
 /* ============================================================================
  * Core 1 Entry: core1_video_entry()
@@ -160,6 +197,8 @@ wait_core1_ready:
  *   s5 = BIOS_CORE1_CMD_LIST    (0x200810A0: base of Bank 9 HSTX cmd lists)
  *   s6 = VIDEO_FRAMEBUF_BASE    (0x20074000)
  *   s7 = BIOS_VSYNC_COUNT_ADDR  (0x50100500)
+ *   s8 = VIDEO_FONT_RAM_BASE    (0x2007D600)
+ *   s9 = VIDEO_TEXT_BUF_BASE    (0x2007DE00)
  * ============================================================================ */
 .p2align 2
 .type core1_video_entry, @function
@@ -259,6 +298,8 @@ core1_video_entry:
     li      s4, BIOS_CORE1_LINE_A       /* First active line composes into LINE_A */
     li      s6, VIDEO_FRAMEBUF_BASE
     li      s7, BIOS_VSYNC_COUNT_ADDR
+    li      s8, VIDEO_FONT_RAM_BASE
+    li      s9, VIDEO_TEXT_BUF_BASE
 
     /* Start Channel 0 (PING) via MULTI_CHAN_TRIGGER */
     li      t1, 0x1
@@ -318,22 +359,32 @@ wait_dma_ch:
     sw      t3, DMA_CH0_COUNT_OFF(t0)
     li      s3, 1                       /* vactive_cmdlist_posted = 1 */
 
-    /* Compose active scanline y = (v_scanline - 45) into Bank 9 buffer s4.
-     * Currently copies 20 words (80 bytes) from VIDEO_FRAMEBUF_BASE + y * 80.
-     * Future: OR-composite FONT_RAM[TEXT_BUF] and blend 32 hardware sprites. */
-    addi    t2, s2, -CFG_MODE_V_BLANK_END
-    li      t3, VIDEO_STRIDE_BYTES
-    mul     t2, t2, t3
-    add     t2, s6, t2                  /* t2 = &FRAMEBUF[y * 80] */
-    mv      t3, s4                      /* t3 = dst Bank 9 ping-pong buffer */
-    li      t4, VIDEO_STRIDE_WORDS      /* 20 words = 640 pixels */
-compose_copy_loop:
-    lw      t5, 0(t2)
-    sw      t5, 0(t3)
-    addi    t2, t2, 4
-    addi    t3, t3, 4
-    addi    t4, t4, -1
-    bnez    t4, compose_copy_loop
+    /* Compose active scanline y = (v_scanline - 45) into Bank 9 buffer s4:
+     *   out_byte = FRAMEBUF[y * 80 + col] | FONT_RAM[TEXT_BUF[(y>>3)*80 + col] * 8 + (y & 7)]
+     * Future: blend behind-text and in-front hardware sprites in this stage. */
+    addi    t2, s2, -CFG_MODE_V_BLANK_END   /* t2 = active_y (0..479) */
+    li      t3, VIDEO_STRIDE_BYTES          /* 80 bytes/row */
+    mul     a0, t2, t3
+    add     a0, s6, a0                      /* a0 = &FRAMEBUF[y * 80] */
+    srli    t4, t2, 3                       /* text_row = y >> 3 (0..59) */
+    mul     a1, t4, t3
+    add     a1, s9, a1                      /* a1 = &TEXT_BUF[text_row * 80] */
+    andi    t4, t2, 7                       /* glyph_row = y & 7 (0..7) */
+    add     a2, s8, t4                      /* a2 = &FONT_RAM[0 + (y & 7)] */
+    mv      a3, s4                          /* a3 = dst Bank 9 ping-pong buffer */
+    addi    a4, s4, VIDEO_STRIDE_BYTES      /* a4 = dst end (+80) */
+compose_col_loop:
+    lbu     t3, 0(a1)                       /* glyph_idx = TEXT_BUF[col] */
+    slli    t3, t3, 3                       /* glyph_idx * 8 */
+    add     t3, t3, a2                      /* &FONT_RAM[glyph_idx * 8 + (y & 7)] */
+    lbu     t3, 0(t3)                       /* glyph_byte */
+    lbu     t4, 0(a0)                       /* fb_byte = FRAMEBUF[col] */
+    or      t4, t4, t3                      /* unified OR-compositing */
+    sb      t4, 0(a3)
+    addi    a0, a0, 1
+    addi    a1, a1, 1
+    addi    a3, a3, 1
+    bltu    a3, a4, compose_col_loop
     j       core1_scanline_loop
 
     /* --- Phase B (posted == 1): Queue already-composed Bank 9 buffer (20 w) --- */

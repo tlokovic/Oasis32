@@ -68,8 +68,15 @@
 #define BIOS_SERIAL_TRY_WRITE       0x13
 
 /* ----------------------------------------------------------------------------
- * 0x20-0x2F: Video / VSYNC Services (placeholder)
- * ---------------------------------------------------------------------------- */
+ * 0x20-0x2F: Video / VSYNC Services (Core 1 Video Coprocessor)
+ * ----------------------------------------------------------------------------
+ *   BIOS_VIDEO_FRAME_COUNT () -> a0 = uint32_t monotonic VSYNC frame counter
+ *   BIOS_VIDEO_WAIT_VSYNC  () -> a0 = uint32_t new VSYNC frame counter [blocking]
+ *   BIOS_VIDEO_RESET_FONT  () -> a0 = ERR_OK (0) (reloads default CP437 8x8 font)
+ */
+#define BIOS_VIDEO_FRAME_COUNT      0x20
+#define BIOS_VIDEO_WAIT_VSYNC       0x21
+#define BIOS_VIDEO_RESET_FONT       0x22
 
 /* ----------------------------------------------------------------------------
  * 0x30-0x3F: Input Services — Keyboard & Mouse (placeholder)

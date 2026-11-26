@@ -80,6 +80,7 @@ trap_sync_entry:
     /* ------------------------------------------------------------------------
      * Resident BIOS Service Dispatch (0x0000 - 0x00FF)
      *   0x10-0x13: Serial Console Services (UART0)
+     *   0x20-0x22: Video / VSYNC Services (Core 1 Video Coprocessor)
      *   0x50:      Timer Services (TIMER0 1 us monotonic clock)
      *   0x60:      Audio Services (Piezo Buzzer)
      *   0x70-0x71: Status LED Services (Red/Green/Blue)
@@ -92,6 +93,12 @@ trap_sync_entry:
     beq     a7, t0, svc_serial_write
     li      t0, BIOS_SERIAL_TRY_WRITE
     beq     a7, t0, svc_serial_try_write
+    li      t0, BIOS_VIDEO_FRAME_COUNT
+    beq     a7, t0, svc_video_frame_count
+    li      t0, BIOS_VIDEO_WAIT_VSYNC
+    beq     a7, t0, svc_video_wait_vsync
+    li      t0, BIOS_VIDEO_RESET_FONT
+    beq     a7, t0, svc_video_reset_font
     li      t0, BIOS_TIME_US
     beq     a7, t0, svc_time_us
     li      t0, BIOS_AUDIO_TONE
@@ -118,6 +125,19 @@ svc_serial_write:
 
 svc_serial_try_write:
     call    uart0_try_write
+    j       ecall_return
+
+svc_video_frame_count:
+    call    video_frame_count
+    j       ecall_return
+
+svc_video_wait_vsync:
+    call    video_wait_vsync
+    j       ecall_return
+
+svc_video_reset_font:
+    call    font_load_default
+    li      a0, ERR_OK
     j       ecall_return
 
 svc_time_us:

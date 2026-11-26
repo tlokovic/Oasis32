@@ -13,6 +13,8 @@
  *   - Piezo Audio (BIOS_AUDIO_TONE): 100 ms @ 1 kHz beep every 3 s
  *   - DVI Framebuffer (VIDEO_FRAMEBUF_BASE): 1 px border + 20x15 grid +
  *     bouncing 32x32 XOR box (~60 px/s) scanned out by Core 1
+ *   - DVI Text Overlay (VIDEO_TEXT_BUF_BASE): bouncing "Oasis32" string at
+ *     character granularity starting from top-right, OR-composited by Core 1
  * ============================================================================
  */
 
@@ -25,12 +27,26 @@
 #define DEMO_PIEZO_DURATION_US      100000
 #define DEMO_PIEZO_FREQ_HZ          1000
 #define DEMO_VIDEO_STEP_US          16667   /* ~60 px/s (1 px per 60 Hz frame) */
+#define DEMO_TEXT_STEP_US           125000  /* 8 cells/s (64 px/s) */
 
 #define DEMO_BOX_SIZE_PX            32
 #define DEMO_BOX_MIN_X              1
 #define DEMO_BOX_MAX_X              (VIDEO_WIDTH - 1 - DEMO_BOX_SIZE_PX)
 #define DEMO_BOX_MIN_Y              1
 #define DEMO_BOX_MAX_Y              (VIDEO_HEIGHT - 1 - DEMO_BOX_SIZE_PX)
+
+#define DEMO_TEXT_LEN               7       /* "Oasis32" */
+#define DEMO_TEXT_MIN_COL           1
+#define DEMO_TEXT_MAX_COL           (VIDEO_TEXT_COLS - 1 - DEMO_TEXT_LEN)
+#define DEMO_TEXT_MIN_ROW           1
+#define DEMO_TEXT_MAX_ROW           (VIDEO_TEXT_ROWS - 2)
+
+/* Local stack-frame slots for bouncing text state (16-byte-aligned 80 B frame) */
+#define STK_TEXT_NEXT_US            0
+#define STK_TEXT_COL                4
+#define STK_TEXT_ROW                8
+#define STK_TEXT_DCOL               12
+#define STK_TEXT_DROW               16
 
 .section .text, "ax"
 
@@ -47,23 +63,24 @@
  *   s8  = box_y          (1..447)
  *   s9  = box_dx         (+1 or -1)
  *   s10 = box_dy         (+1 or -1)
+ *   sp+0..16 = bouncing text state (next_us, col, row, dcol, drow)
  * ---------------------------------------------------------------------------- */
 .global hardware_demo
 .type hardware_demo, @function
 hardware_demo:
-    addi    sp, sp, -48
-    sw      ra, 44(sp)
-    sw      s0, 40(sp)
-    sw      s1, 36(sp)
-    sw      s2, 32(sp)
-    sw      s3, 28(sp)
-    sw      s4, 24(sp)
-    sw      s5, 20(sp)
-    sw      s6, 16(sp)
-    sw      s7, 12(sp)
-    sw      s8, 8(sp)
-    sw      s9, 4(sp)
-    sw      s10, 0(sp)
+    addi    sp, sp, -80
+    sw      ra, 76(sp)
+    sw      s0, 72(sp)
+    sw      s1, 68(sp)
+    sw      s2, 64(sp)
+    sw      s3, 60(sp)
+    sw      s4, 56(sp)
+    sw      s5, 52(sp)
+    sw      s6, 48(sp)
+    sw      s7, 44(sp)
+    sw      s8, 40(sp)
+    sw      s9, 36(sp)
+    sw      s10, 32(sp)
 
     la      a0, str_splash
     call    demo_puts
@@ -77,6 +94,20 @@ hardware_demo:
     mv      a0, s7
     mv      a1, s8
     call    demo_fb_xor_box
+
+    /* Place initial "Oasis32" text overlay at top-right corner (col=72, row=1) */
+    li      t0, DEMO_TEXT_MAX_COL
+    sw      t0, STK_TEXT_COL(sp)
+    li      t1, DEMO_TEXT_MIN_ROW
+    sw      t1, STK_TEXT_ROW(sp)
+    li      t2, -1
+    sw      t2, STK_TEXT_DCOL(sp)
+    li      t2, 1
+    sw      t2, STK_TEXT_DROW(sp)
+    mv      a0, t0
+    mv      a1, t1
+    la      a2, str_bounce_text
+    call    demo_text_write
 
     /* Snapshot initial timestamp */
     li      a7, BIOS_TIME_US
@@ -102,9 +133,12 @@ hardware_demo:
     li      t0, DEMO_PIEZO_PERIOD_US
     add     s3, s0, t0                  /* s3 = next_piezo_us */
 
-    /* Schedule first bouncing-box step in 16.67 ms (~60 px/s) */
+    /* Schedule first bouncing-box step (16.67 ms) and text step (125 ms) */
     li      t0, DEMO_VIDEO_STEP_US
     add     s6, s0, t0                  /* s6 = next_video_us */
+    li      t0, DEMO_TEXT_STEP_US
+    add     t0, s0, t0
+    sw      t0, STK_TEXT_NEXT_US(sp)
 
 demo_loop:
     /* 1. Non-blocking serial echo (BIOS_SERIAL_TRY_READ) */
@@ -183,7 +217,7 @@ check_piezo_start:
 check_video:
     /* 4. Non-blocking ~60 px/s bouncing 32x32 XOR box on VIDEO_FRAMEBUF_BASE */
     sub     t0, s0, s6
-    bltz    t0, demo_loop
+    bltz    t0, check_text
 
     /* Erase old box */
     mv      a0, s7
@@ -223,8 +257,108 @@ check_video:
 
     li      t0, DEMO_VIDEO_STEP_US
     add     s6, s6, t0
+
+check_text:
+    /* 5. Non-blocking bouncing "Oasis32" text overlay on VIDEO_TEXT_BUF_BASE */
+    lw      t1, STK_TEXT_NEXT_US(sp)
+    sub     t0, s0, t1
+    bltz    t0, demo_loop
+
+    /* Erase old string with transparent 0x00 cells */
+    lw      a0, STK_TEXT_COL(sp)
+    lw      a1, STK_TEXT_ROW(sp)
+    li      a2, DEMO_TEXT_LEN
+    call    demo_text_clear
+
+    /* Bounce column in [DEMO_TEXT_MIN_COL, DEMO_TEXT_MAX_COL] */
+    lw      t2, STK_TEXT_COL(sp)
+    lw      t3, STK_TEXT_DCOL(sp)
+    blez    t3, 5f
+    li      t4, DEMO_TEXT_MAX_COL
+    blt     t2, t4, 6f
+    neg     t3, t3
+    j       6f
+5:
+    li      t4, DEMO_TEXT_MIN_COL
+    bgt     t2, t4, 6f
+    neg     t3, t3
+6:
+    add     t2, t2, t3
+    sw      t2, STK_TEXT_COL(sp)
+    sw      t3, STK_TEXT_DCOL(sp)
+
+    /* Bounce row in [DEMO_TEXT_MIN_ROW, DEMO_TEXT_MAX_ROW] */
+    lw      t2, STK_TEXT_ROW(sp)
+    lw      t3, STK_TEXT_DROW(sp)
+    blez    t3, 7f
+    li      t4, DEMO_TEXT_MAX_ROW
+    blt     t2, t4, 8f
+    neg     t3, t3
+    j       8f
+7:
+    li      t4, DEMO_TEXT_MIN_ROW
+    bgt     t2, t4, 8f
+    neg     t3, t3
+8:
+    add     t2, t2, t3
+    sw      t2, STK_TEXT_ROW(sp)
+    sw      t3, STK_TEXT_DROW(sp)
+
+    /* Draw "Oasis32" at new (col, row) and advance deadline */
+    lw      a0, STK_TEXT_COL(sp)
+    lw      a1, STK_TEXT_ROW(sp)
+    la      a2, str_bounce_text
+    call    demo_text_write
+
+    lw      t1, STK_TEXT_NEXT_US(sp)
+    li      t0, DEMO_TEXT_STEP_US
+    add     t1, t1, t0
+    sw      t1, STK_TEXT_NEXT_US(sp)
     j       demo_loop
 .size hardware_demo, . - hardware_demo
+
+/* ----------------------------------------------------------------------------
+ * demo_text_write(a0 = col, a1 = row, a2 = NUL-terminated string):
+ *   Writes string bytes into 80x60 VIDEO_TEXT_BUF_BASE at (col, row).
+ * ---------------------------------------------------------------------------- */
+.type demo_text_write, @function
+demo_text_write:
+    li      t0, VIDEO_TEXT_COLS
+    mul     t0, a1, t0
+    add     t0, t0, a0
+    li      t1, VIDEO_TEXT_BUF_BASE
+    add     t0, t1, t0
+1:
+    lbu     t2, 0(a2)
+    beqz    t2, 2f
+    sb      t2, 0(t0)
+    addi    a2, a2, 1
+    addi    t0, t0, 1
+    j       1b
+2:
+    ret
+.size demo_text_write, . - demo_text_write
+
+/* ----------------------------------------------------------------------------
+ * demo_text_clear(a0 = col, a1 = row, a2 = count):
+ *   Writes `count` transparent 0x00 cells into VIDEO_TEXT_BUF_BASE at (col, row).
+ * ---------------------------------------------------------------------------- */
+.type demo_text_clear, @function
+demo_text_clear:
+    li      t0, VIDEO_TEXT_COLS
+    mul     t0, a1, t0
+    add     t0, t0, a0
+    li      t1, VIDEO_TEXT_BUF_BASE
+    add     t0, t1, t0
+1:
+    beqz    a2, 2f
+    sb      zero, 0(t0)
+    addi    t0, t0, 1
+    addi    a2, a2, -1
+    j       1b
+2:
+    ret
+.size demo_text_clear, . - demo_text_clear
 
 /* ----------------------------------------------------------------------------
  * demo_fb_draw_grid_and_border:
@@ -449,7 +583,9 @@ demo_print_u8_bin:
  * ============================================================================ */
 .section .rodata, "a"
 str_splash:
-    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI 640x480; type to echo:\r\n"
+    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI + Text)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI 640x480 + 80x60 Text; type to echo:\r\n"
+str_bounce_text:
+    .asciz "Oasis32"
 str_rx_prefix:
     .asciz "Serial character received: dec="
 str_hex_sep:
