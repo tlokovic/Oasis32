@@ -88,12 +88,15 @@ clocks_init_126mhz:
     andi    t1, t1, CLK_SYS_SEL_AUX_BIT
     beqz    t1, 6b
 
-    /* 7. Enable clk_peri and clk_hstx sourced from clk_sys (126.000 MHz) */
+    /* 7. Enable clk_peri & clk_hstx (126 MHz clk_sys) and clk_usb (12 MHz XOSC
+     *    so RESETS.RESET_DONE.USBCTRL can assert for 4 KB USB DPRAM access) */
     li      t1, CLK_PERI_EN_SYS
     sw      t1, CLK_PERI_CTRL_OFF(t0)
     li      t1, CLK_HSTX_DIV_1
     sw      t1, CLK_HSTX_DIV_OFF(t0)
     li      t1, CLK_HSTX_EN_SYS
     sw      t1, CLK_HSTX_CTRL_OFF(t0)
+    li      t1, CLK_USB_EN_XOSC
+    sw      t1, CLK_USB_CTRL_OFF(t0)
     ret
 .size clocks_init_126mhz, . - clocks_init_126mhz

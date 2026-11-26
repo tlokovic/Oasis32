@@ -78,6 +78,7 @@
 #define CLK_PERI_CTRL_OFF           0x048
 #define CLK_HSTX_CTRL_OFF           0x054
 #define CLK_HSTX_DIV_OFF            0x058
+#define CLK_USB_CTRL_OFF            0x060
 
 #define CLK_REF_SRC_XOSC            2
 #define CLK_REF_SEL_XOSC_BIT        (1 << 2)
@@ -89,6 +90,7 @@
 #define CLK_PERI_EN_SYS             ((1 << 11) | (0 << 5))
 #define CLK_HSTX_EN_SYS             ((1 << 11) | (0 << 5))
 #define CLK_HSTX_DIV_1              (1 << 16)
+#define CLK_USB_EN_XOSC             ((1 << 11) | (3 << 5)) /* 12 MHz XOSC for USBCTRL reset/DPRAM */
 
 /* ----------------------------------------------------------------------------
  * TICKS Registers (§8.5.2, pp. 522-524)

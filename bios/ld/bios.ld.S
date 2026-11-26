@@ -43,10 +43,7 @@ SECTIONS
         . = ALIGN(BIOS_MTVEC_ALIGN);
         __mtvec_base = .;
         KEEP(*(.text.mtvec))
-
-        /* Verify boot metadata and trap vector fit in the first 4 KB window */
-        ASSERT((. - BIOS_FLASH_BASE) <= BIOS_BOOT_WINDOW_SIZE,
-               "PICOBIN IMAGE_DEF / mtvec exceeded the 4 KB boot scan window")
+        __boot_window_end = .;
 
         /* 4. Remaining BIOS code and read-only data (XIP Flash) */
         . = ALIGN(4);
@@ -56,6 +53,10 @@ SECTIONS
         *(.srodata .srodata.*)
         . = ALIGN(4);
     } > FLASH
+
+    /* Verify boot metadata and trap vector fit in the first 4 KB window */
+    ASSERT((__boot_window_end - BIOS_FLASH_BASE) <= BIOS_BOOT_WINDOW_SIZE,
+           "PICOBIN IMAGE_DEF / mtvec exceeded the 4 KB boot scan window")
 
     __bios_flash_end = .;
 
