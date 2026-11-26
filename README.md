@@ -6,11 +6,11 @@
 
 ## Overview
 
-**Oasis32** is a complete retro-inspired computer built around a Raspberry Pi Pico 2. It provides video, keyboard, mouse, removable SD card storage, and more, all accessible through simple memory-mapped interfaces, with no complex protocols such as USB. The result is a computer that can be programmed 100% without third-party drivers, libraries, or SDKs, and can be understood top-to-bottom by a single person.
+**Oasis32** is a complete retro-inspired computer built around a Raspberry Pi Pico 2. It supports video, keyboard, mouse, removable SD card storage, serial I/O, and piezo audio, all accessible through memory-mapped interfaces with no complex protocols like USB. The result is a computer that can be programmed 100% without third-party drivers, libraries, or SDKs, and can be understood top-to-bottom by a single person.
 
-Oasis32 intentionally combines the simple architecture of a 1980s computer (single core, single thread, no memory protection) with modern affordances that make low-level programming actually fun (32-bit RISC-V instruction set, 520KB of RAM, elegant syscall ABIs).
+Oasis32 intentionally combines the simple architecture of a 1980s computer (single core, single thread, no memory protection) with modern affordances that make low-level assembly programming fun (32-bit RISC-V instruction set, 520KB of RAM, elegant syscall ABIs).
 
-The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FAT32. Instead, Oasis32 is a foundation for exploring a from-scratch homebrew software stack, including custom BIOS, OS, filesystem, tools, and applications.
+The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FAT32. Instead, Oasis32 is a foundation for exploring a from-scratch homebrew software stack, including custom BIOS, OS, filesystem, tools, languages, and applications.
 
 The system supports cross-assembling from modern hosts, but the long-term aspiration is a self-hosted machine that can be programmed entirely on its own.
 
