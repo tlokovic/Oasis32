@@ -126,26 +126,36 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * **Strict ABI Boundary:** Public contracts live in `include/` (`abi/` headers + `ld/sd_payload.ld.S`); all RP2350 register maps, Oasis32 pin wiring (`hw/`), and BIOS-private state live strictly inside `bios/internal/` and are never exposed to `disks/`.
 * **Single Source of Truth:** Shared constants use pure `#define` headers (`.h`) consumed by both `.S` sources and preprocessed `.ld.S` linker script templates via a shared `cmake/oasis32.cmake` helper.
 
-### Sub-Phase 3a: Architectural Decisions & Representational Foundation
+### Sub-Phase 3a (COMPLETE): Architectural Decisions & Representational Foundation
 * Architectural decisions finalized in `docs/BootBehavior.md` (interactive `UART0` boot menu, packed 16-byte `"OA32"` disk image format, Base64 serial loader/writer), `docs/ExecutionModel.md` (single-core M-mode programmer model, BIOS-owned Vectored `mtvec` with `mscratch` IRQ stack, `ecall` ROM ABI with OS extension hook), `docs/VideoArchitecture.md` (Core 1 hidden Video Coprocessor compositing `80×60` `TEXT_BUF` + glyph-major `256×8` `FONT_RAM` + `32` masked `16×16` hardware sprites across `56` patterns onto `640×480` `FRAMEBUF`), and `docs/MemoryMap.md` (464 KB contiguous User SRAM + 48 KB Public Video Block + 4 KB BIOS-private USB DPRAM).
-* Create `cmake/oasis32.cmake` with the `oasis32_abi` interface target, `.ld.S` preprocessing helper (using `gcc -E -P -x c` with `DEPFILE` tracking), and bare-metal disk target helper.
-* Author the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
-* Author the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
+* Created `cmake/oasis32.cmake` with the `oasis32_abi` interface target, `.ld.S` preprocessing helper (using `gcc -E -P -x c` with `DEPFILE` tracking), and bare-metal disk target helper.
+* Authored the public ABI headers (`include/abi/memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`) and shared `include/ld/sd_payload.ld.S`.
+* Authored the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
 
-### Sub-Phase 3b: Modular Hardware Bring-Up & Resident Drivers
-* Organize the validated Phase 2 hardware bring-up and drivers into clean, modular `.S` files under `bios/src/`:
-  * Boot entry, `PICOBIN` `IMAGE_DEF`, clock tree (`XOSC` -> `PLL_SYS` @ 126 MHz), `RESETS`, `PADS_BANK0` `ISO` clearing, and `TIMER0` 1 µs timebase.
-  * Status LEDs (`SIO`), piezo buzzer (`PWM`), debug serial (`UART0`), CH9350 keyboard/mouse (`UART1`), and SD card block I/O (`SPI0` + `GP6` card detect).
-  * Core 1 Video Coprocessor bring-up (launched via SIO inter-core FIFO, private stack in Scratchpad Bank 9): initializes default `FONT_RAM` (glyph `0x00` empty) and zeroes `SPRITE_OAM`, drives `HSTX` + ping-pong DMA scanlines compositing `FRAMEBUF | FONT_RAM[TEXT_BUF]` (plus the 32-sprite masked `16×16` engine, which can be staged right after baseline framebuffer + text bring-up), and maintains the VSYNC frame counter.
-* Confine all BIOS-private driver state cleanly to the 4 KB USB DPRAM (`0x5010_0000`, deasserting `USBCTRL` in `RESETS` while keeping the USB controller disabled) and BIOS stacks/ping-pong buffers to Scratchpad Banks 8–9 (`bios_ram.h`), leaving 100% of Main SRAM user-facing (`memory_map.h`).
+### Sub-Phase 3b (IN PROGRESS): Subsystem-by-Subsystem Driver & `ecall` ABI Bring-Up (`hardware_demo`)
+Rather than implementing all drivers first and wiring the `ecall` ABI afterward, Phase 3b brings up **one subsystem at a time**—implementing its resident driver under `bios/src/`, finalizing its public `ecall` contract in `include/abi/`, wiring it into the Vectored `mtvec` dispatcher (`bios/src/abi_dispatch.S`), and immediately validating it on hardware via a temporary `bios/src/hardware_demo.S` called from `bios/src/main.S`.
 
-### Sub-Phase 3c: Stable Resident BIOS ABI & Interactive Boot Menu / Serial Loader
-* Implement the Vectored `mtvec` trap architecture on Core 0 (`mscratch` private BIOS IRQ stack in Bank 8 + `ecall` ABI dispatcher in `bios/src/abi_dispatch.S` with `mstatus.MIE` re-enabled during service calls) exposing hardware I/O services (display buffers/VSYNC, serial, keyboard/mouse, SD block read/write, timer, buzzer, LEDs) to SRAM-loaded payloads.
+* **Strict ABI Validation Rule:** `bios/src/hardware_demo.S` reconstructs the full Phase 2 test harness behaviors using **only** `include/abi/` headers and `ecall` BIOS calls (zero `bios/internal/` includes or direct MMIO). Once all subsystems are validated, `hardware_demo.S` will be removed from the BIOS (or moved into `disks/` as a standalone Stage-2 test disk) and replaced in `bios/src/main.S` by the real BIOS boot menu and bootloader.
+* **Memory Isolation:** All BIOS-private driver state is confined to the 4 KB USB DPRAM (`0x5010_0000`, with `clk_usb` enabled from 12 MHz `XOSC` so `RESETS.RESET_DONE.USBCTRL` asserts while the USB controller remains disabled) and BIOS stacks/scanline buffers to Scratchpad Banks 8–9 (`bios_ram.h`), leaving 100% of Main SRAM user-facing (`memory_map.h`).
+* **Subsystem Checklist:**
+  * [x] **Core Bring-Up & Vectored `mtvec` Dispatcher:** `boot.S` (`PICOBIN` `IMAGE_DEF`, Bank 8 stack, USB DPRAM zeroing, `mtvec` Vectored Mode), `clocks.S` (12 MHz `XOSC` → 126 MHz `PLL_SYS` + 12 MHz `clk_usb`), and `abi_dispatch.S` (`ecall` dispatcher + OS extension hook).
+  * [x] **Debug Serial (`uart0.S`):** `BIOS_SERIAL_READ` (`0x10`), `BIOS_SERIAL_TRY_READ` (`0x11`), `BIOS_SERIAL_WRITE` (`0x12`), `BIOS_SERIAL_TRY_WRITE` (`0x13`) — verified in `hardware_demo.S` (splash + dec/hex/bin echo).
+  * [x] **Monotonic Timer (`timer.S`):** `TICKS` 1 MHz + `TIMER0` atomic 64-bit `BIOS_TIME_US` (`0x50`) — verified in `hardware_demo.S`.
+  * [x] **Status LEDs (`leds.S`):** `BIOS_LED_WRITE` (`0x70`), `BIOS_LED_READ` (`0x71`) — verified in `hardware_demo.S` (non-blocking 1 s Red → Green → Blue cycle).
+  * [x] **Piezo Buzzer (`piezo.S`):** `PWM3 A` `BIOS_AUDIO_TONE` (`0x60`, `0` = off, `16..20000` Hz) — verified in `hardware_demo.S` (non-blocking 100 ms @ 1 kHz beep every 3 s).
+  * [ ] **Keyboard / Mouse (`UART1` CH9350):** Define `BIOS_BLK_INPUT` (`0x30`) ABI, implement resident driver (and Core 0 `Xh3irq` buffering on the `mscratch` stack if needed), and add HID event logging to `hardware_demo.S`.
+  * [ ] **SD Card Block I/O (`SPI0` + `GP6` card detect):** Define `BIOS_BLK_SD` (`0x40`) ABI, implement resident block driver, and add rotating 512-byte write/read/verify to `hardware_demo.S`.
+  * [ ] **Core 1 Video Coprocessor (`HSTX` + ping-pong DMA):** Define `BIOS_BLK_VIDEO` (`0x20`) ABI, launch Core 1 via SIO FIFO (private stack in Scratchpad Bank 9), composite `FRAMEBUF | FONT_RAM[TEXT_BUF]` + 32 masked `16×16` sprites, maintain VSYNC frame counter, and validate border/grid/XOR box/text/sprites in `hardware_demo.S`.
+  * [ ] **System Control (`BIOS_BLK_SYS` `0x00`):** Define and implement `SYS_VERSION`, `SYS_REBOOT`, and `SYS_SET_OS_ECALL_HANDLER`.
+
+### Sub-Phase 3c: Interactive Boot Menu, Base64 Serial Loader & Stage-1 SD Bootloader
+Once all BIOS syscalls are validated via `hardware_demo.S`, replace `bios/src/main.S`'s call to `hardware_demo()` with the intended Stage-1 BIOS behavior:
 * Implement the interactive startup boot menu over `UART0` (splash + `ENTER` SD boot, `1` Base64 serial-to-SRAM boot, `2` Base64 serial-to-SD disk writer buffered in User SRAM), including `"Insert boot disk"` / `"Insert disk to write"` card-detect waits and error recovery back to the boot menu.
-
-### Sub-Phase 3d: SD Bootloader & End-to-End Boot Verification
 * Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the packed 16-byte `"OA32"` Boot Image Header at LBA 0, load payload bytes (starting at offset `16` of LBA 0 across subsequent sectors) into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
-* Verify the complete boot chain (via both serial-to-RAM boot and serial-to-SD write + SD boot) with a minimal smoke-test boot disk under `disks/` that links strictly against `include/abi/` and `include/ld/sd_payload.ld.S` and exercises resident BIOS services.
+
+### Sub-Phase 3d: End-to-End Boot Verification & Extracted Test Disk
+* Move `bios/src/hardware_demo.S` out of `bios/` into a standalone Stage-2 bootable disk under `disks/` linking strictly against `include/abi/` and `include/ld/sd_payload.ld.S`.
+* Verify the complete boot chain (via both serial-to-RAM boot and serial-to-SD write + SD boot) running the extracted `hardware_demo` disk on top of the resident Flash BIOS.
 
 ### Phase 3 Deliverable: Oasis32 Programmer's Reference (`docs/ProgrammersReference.md`)
 Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep with `include/abi/`, this manual serves as the authoritative, self-contained specification for programming Oasis32 (in the spirit of the *Commodore 64 Programmer's Reference Guide*).
