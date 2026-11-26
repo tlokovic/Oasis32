@@ -43,7 +43,7 @@ bios_boot_init:
 
     /* 2. Release minimal peripheral set from reset (including USBCTRL for 4 KB DPRAM) */
     li      t0, RESETS_BASE + ATOMIC_CLR
-    li      t1, (RESET_BIT_IO_BANK0 | RESET_BIT_PADS_BANK0 | RESET_BIT_UART0 | RESET_BIT_USBCTRL)
+    li      t1, (RESET_BIT_IO_BANK0 | RESET_BIT_PADS_BANK0 | RESET_BIT_TIMER0 | RESET_BIT_UART0 | RESET_BIT_USBCTRL)
     sw      t1, RESETS_RESET_OFF(t0)
 
     li      t0, RESETS_BASE
@@ -60,9 +60,16 @@ bios_boot_init:
     addi    t0, t0, 4
     bltu    t0, t1, 2b
 
-    /* 4. Initialize debug serial (UART0 @ 115200 8N1) */
+    /* 4. Initialize resident drivers (TIMER0, LEDs, UART0) */
+    call    timer_init
+    call    leds_init
     call    uart0_init
 
-    /* 5. Enter BIOS main loop */
+    /* 5. Install Vectored mtvec trap table (ecall BIOS ABI + future IRQs) */
+    la      t0, __mtvec_base
+    ori     t0, t0, BIOS_MTVEC_MODE_VECTORED
+    csrw    mtvec, t0
+
+    /* 6. Enter BIOS main */
     j       bios_main
 .size bios_boot_init, . - bios_boot_init

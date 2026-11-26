@@ -138,6 +138,7 @@
  * ---------------------------------------------------------------------------- */
 #define SIO_CPUID_OFF               0x000
 #define SIO_GPIO_IN_OFF             0x004
+#define SIO_GPIO_OUT_OFF            0x010
 #define SIO_GPIO_OUT_SET_OFF        0x018
 #define SIO_GPIO_OUT_CLR_OFF        0x020
 #define SIO_GPIO_OE_SET_OFF         0x038

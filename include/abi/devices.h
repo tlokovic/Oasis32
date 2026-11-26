@@ -66,8 +66,13 @@
 #define SD_SECTOR_SIZE              512
 
 /* ----------------------------------------------------------------------------
- * Status LEDs (3-bit logical mask)
+ * Status LEDs (logical indices & 3-bit mask)
  * ---------------------------------------------------------------------------- */
+#define LED_RED                     0
+#define LED_GREEN                   1
+#define LED_BLUE                    2
+#define LED_COUNT                   3
+
 #define LED_BIT_RED                 (1 << 0)
 #define LED_BIT_GREEN               (1 << 1)
 #define LED_BIT_BLUE                (1 << 2)
