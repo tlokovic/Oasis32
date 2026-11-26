@@ -41,9 +41,10 @@ bios_boot_init:
     /* 1. Bring up 12 MHz XOSC -> 126.000 MHz PLL_SYS (clk_sys, clk_peri, clk_hstx) */
     call    clocks_init_126mhz
 
-    /* 2. Release minimal peripheral set from reset (including USBCTRL for 4 KB DPRAM) */
+    /* 2. Release active peripheral set from reset (including USBCTRL for 4 KB DPRAM
+     *    and BUSCTRL/DMA/HSTX for Core 1 Video Coprocessor) */
     li      t0, RESETS_BASE + ATOMIC_CLR
-    li      t1, (RESET_BIT_IO_BANK0 | RESET_BIT_PADS_BANK0 | RESET_BIT_PWM | RESET_BIT_TIMER0 | RESET_BIT_UART0 | RESET_BIT_USBCTRL)
+    li      t1, (RESET_BIT_BUSCTRL | RESET_BIT_DMA | RESET_BIT_HSTX | RESET_BIT_IO_BANK0 | RESET_BIT_PADS_BANK0 | RESET_BIT_PWM | RESET_BIT_TIMER0 | RESET_BIT_UART0 | RESET_BIT_USBCTRL)
     sw      t1, RESETS_RESET_OFF(t0)
 
     li      t0, RESETS_BASE
@@ -60,11 +61,12 @@ bios_boot_init:
     addi    t0, t0, 4
     bltu    t0, t1, 2b
 
-    /* 4. Initialize resident drivers (TIMER0, LEDs, Piezo, UART0) */
+    /* 4. Initialize resident drivers (TIMER0, LEDs, Piezo, UART0, Core 1 Video) */
     call    timer_init
     call    leds_init
     call    piezo_init
     call    uart0_init
+    call    video_init
 
     /* 5. Install Vectored mtvec trap table (ecall BIOS ABI + future IRQs) */
     la      t0, __mtvec_base
