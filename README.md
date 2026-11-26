@@ -1,4 +1,4 @@
-# Oasis32 — RISC-V Fantasy Retro Computer
+# Oasis32 — 32-bit RISC-V Retro-Inspired Computer
 
 <img src="images/assembled_left_side.jpg" width="48%"> <img src="images/assembled_right_side.jpg" width="48%">
 
