@@ -17,9 +17,9 @@
  * Scope (Phase 3b — Full Video Coprocessor: Bitmap + Text + Sprites):
  *   - 4-layer scanline compositing in Bank 9 ping-pong line buffers:
  *       1. FRAMEBUF (640x480 1 bpp)
- *       2. Behind-text sprites (BEHIND_TEXT=1, OAM Slot 31 -> Slot 0)
+ *       2. Behind-text sprites (BEHIND_TEXT=1, OAM Slot 15 -> Slot 0)
  *       3. TEXT_BUF / FONT_RAM (80x60 OR-composited 8x8 CP437 glyphs)
- *       4. In-front sprites (BEHIND_TEXT=0, OAM Slot 31 -> Slot 0)
+ *       4. In-front sprites (BEHIND_TEXT=0, OAM Slot 15 -> Slot 0)
  *   - VBLANK frame-latching of SPRITE_OAM into BIOS_CORE1_OAM_LATCH when
  *     VIDEO_CTRL.LATCH_OAM (bit 0) is set, or live beam-racing when clear.
  *
@@ -213,7 +213,7 @@ video_wait_vsync:
  *   s8  = VIDEO_FONT_RAM_BASE   (0x2007D600)
  *   s9  = VIDEO_TEXT_BUF_BASE   (0x2007DE00)
  *   s10 = active_oam_base       (BIOS_CORE1_OAM_LATCH or VIDEO_SPRITE_OAM_BASE)
- *   s11 = VIDEO_SPRITE_PAT_BASE (0x2007F200)
+ *   s11 = VIDEO_SPRITE_PAT_BASE (0x2007F180)
  * ============================================================================ */
 .p2align 2
 .type core1_video_entry, @function
@@ -612,7 +612,7 @@ core1_draw_sprite_list:
     sw      a5, 8(sp)
 
     li      a6, SPRITE_HEIGHT               /* 16 */
-    li      a7, SPRITE_PAT_COUNT            /* 56 */
+    li      a7, SPRITE_PAT_COUNT            /* 58 */
     /* Determine expected BEHIND_TEXT bit from list_ptr (behind vs front) */
     addi    t2, s5, CMD_BEHIND_LIST_OFF
     li      t1, 0

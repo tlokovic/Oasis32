@@ -20,10 +20,10 @@ The BIOS exposes one contiguous **48 KB** public video memory block at the top o
 | **`FONT_RAM`** | `0x2007_D600`–`0x2007_DDFF` | `256` glyphs × `8` B | 2,048 B | Programmable `8×8` character set in **glyph-major layout** (`FONT_RAM[char * 8 + row]`, row `0` = top, row `7` = bottom). |
 | **`TEXT_BUF`** | `0x2007_DE00`–`0x2007_F0BF` | `80×60` cells | 4,800 B | Character grid: 1 byte per `8×8`-pixel cell (`row * 80 + col`), indexing glyphs `0x00`–`0xFF` in `FONT_RAM`. |
 | **`VIDEO_CTRL`** | `0x2007_F0C0`–`0x2007_F0FF` | Control/status block | 64 B | Public video control registers (e.g., `LATCH_OAM` mode bit, future scroll/cursor flags). |
-| **`SPRITE_OAM`** | `0x2007_F100`–`0x2007_F1FF` | `32` slots × `8` B | 256 B | Active on-screen sprite descriptor table (Sprite 0 conventionally used as the mouse cursor). |
-| **`SPRITE_PAT`** | `0x2007_F200`–`0x2007_FFFF` | `56` patterns × `64` B | 3,584 B | Masked `16×16` 2-plane sprite pattern bank (supports multiple animation frames and shared patterns). |
+| **`SPRITE_OAM`** | `0x2007_F100`–`0x2007_F17F` | `16` slots × `8` B | 128 B | Active on-screen sprite descriptor table (Sprite 0 conventionally used as the mouse cursor). |
+| **`SPRITE_PAT`** | `0x2007_F180`–`0x2007_FFFF` | `58` patterns × `64` B | 3,712 B | Masked `16×16` 2-plane sprite pattern bank (supports multiple animation frames and shared patterns). |
 
-* **Total Video Footprint:** `38,400 + 2,048 + 4,800 + 64 + 256 + 3,584 = 49,152` bytes (**exactly 48 KB**, leaving 464 KB of contiguous User SRAM).
+* **Total Video Footprint:** `38,400 + 2,048 + 4,800 + 64 + 128 + 3,712 = 49,152` bytes (**exactly 48 KB**, leaving 464 KB of contiguous User SRAM).
 * **Default Boot Font & Custom Tiles:** On power-up, the BIOS initializes `FONT_RAM` from a default 8×8 font stored in Flash, with **glyph `0x00` defined as all zeros (empty/transparent)**, and zeroes `SPRITE_OAM` so all sprites start disabled. Because `FONT_RAM` lives in SRAM, Stage-2 software can overwrite any glyph at runtime to create custom symbols, box-drawing characters, or 8×8 graphic tiles.
 
 ---
@@ -83,43 +83,42 @@ This single rule naturally covers every display use case without any mode-switch
 
 ## 5. Hardware Sprite Engine (`SPRITE_OAM` & `SPRITE_PAT`)
 
-Core 1's scanline compositor includes a **32-sprite masked `16×16` hardware sprite engine** backed by **56 reusable sprite patterns**—enabling smooth animation cycling, game sprites, and a floating hardware mouse cursor (by convention, **Sprite 0**) with zero per-scanline drop-out or flicker.
+Core 1's scanline compositor includes a **16-sprite masked `16×16` hardware sprite engine** backed by **58 reusable sprite patterns**—enabling smooth animation cycling, game sprites, and a floating hardware mouse cursor (by convention, **Sprite 0**) with zero per-scanline drop-out or flicker.
 
-### 5.1 Sprite Pattern Format (`SPRITE_PAT`: `0x2007_F200`–`0x2007_FFFF`)
-Each of the **56** `16×16` patterns occupies **64 bytes** in a **split-plane 2-plane monochrome** layout:
+### 5.1 Sprite Pattern Format (`SPRITE_PAT`: `0x2007_F180`–`0x2007_FFFF`)
+Each of the **58** `16×16` patterns occupies **64 bytes** in a **split-plane 2-plane monochrome** layout:
 * **Bytes `0..31` (Pixel Plane):** `16` rows × `uint16_t` (row `0` = top, row `15` = bottom; bit order matches `FRAMEBUF`/`FONT_RAM`).
 * **Bytes `32..63` (Mask Plane):** `16` rows × `uint16_t` (`1` = opaque, `0` = transparent).
 
 This gives every pixel **3 states**—**Transparent** (`mask = 0`), **Opaque Black** (`mask = 1, pixel = 0`), or **Opaque White** (`mask = 1, pixel = 1`)—so a white mouse arrow can carry a crisp 1-pixel black outline over both black and white backgrounds.
 
-### 5.2 OAM Slot Format (`SPRITE_OAM`: `0x2007_F100`–`0x2007_F1FF`)
-Each of the **32** simultaneous on-screen sprite slots occupies **8 bytes** (little-endian):
+### 5.2 OAM Slot Format (`SPRITE_OAM`: `0x2007_F100`–`0x2007_F17F`)
+Each of the **16** simultaneous on-screen sprite slots occupies **8 bytes** (little-endian):
 
 | Offset | Size | Field | Description |
 |:---:|:---:|:---|:---|
 | `+0` | 2 B | `x` (`int16_t`) | Signed horizontal position (`-15`..`639`) for smooth off-screen clipping on left/right edges. |
 | `+2` | 2 B | `y` (`int16_t`) | Signed vertical position (`-15`..`479`) for smooth off-screen clipping on top/bottom edges. *(`x` and `y` share one 32-bit word `[y:16 \| x:16]`, enabling atomic position updates with a single `sw`.)* |
-| `+4` | 1 B | `pattern` (`uint8_t`) | Pattern index (`0`–`55`) into `SPRITE_PAT` (out-of-range indices are skipped; multiple slots may share one pattern). |
+| `+4` | 1 B | `pattern` (`uint8_t`) | Pattern index (`0`–`57`) into `SPRITE_PAT` (out-of-range indices are skipped; multiple slots may share one pattern). |
 | `+5` | 1 B | `flags` (`uint8_t`) | Bit `0`: `ENABLE` (`1` = visible)<br>Bit `1`: `HFLIP` (horizontal mirror)<br>Bit `2`: `VFLIP` (vertical mirror)<br>Bit `3`: `BEHIND_TEXT` (`0` = above `TEXT_BUF`, `1` = between `FRAMEBUF` and `TEXT_BUF`)<br>Bits `5:4`: `BLEND` (`00` = Masked Opaque `(bg & ~mask) \| pixels`, `01` = OR `bg \| pixels`, `10` = XOR `bg ^ pixels`, `11` = reserved)<br>Bits `7:6`: reserved (`0`) |
 | `+6` | 2 B | `reserved` | Reserved (`0`). |
 
 ### 5.3 Compositing Priority & Mouse Cursor Convention
 Core 1 composites each active scanline into the Bank 9 line buffer in four deterministic layers:
 1. **`FRAMEBUF`** (bottom layer)
-2. **Behind-text sprites** (`BEHIND_TEXT = 1`), drawn **Slot 31 → Slot 0**
+2. **Behind-text sprites** (`BEHIND_TEXT = 1`), drawn **Slot 15 → Slot 0**
 3. **`TEXT_BUF` / `FONT_RAM`** (OR-composited on top)
-4. **In-front sprites** (`BEHIND_TEXT = 0`), drawn **Slot 31 → Slot 0**
+4. **In-front sprites** (`BEHIND_TEXT = 0`), drawn **Slot 15 → Slot 0**
 
 Because **lower OAM index = higher visual priority**, **Sprite 0** (used by convention as the mouse cursor, with `BEHIND_TEXT = 0`) automatically floats above all graphics, all text, and all other sprites with zero special-case logic.
 
 ### 5.4 `VIDEO_CTRL` Latching & Scanline Timing Budget
 * **`VIDEO_CTRL` (`0x2007_F0C0`) `LATCH_OAM` flag:**
-  * **`1` (default — Frame-Latched):** During VBLANK (~`180,000` idle cycles across 45 blanking lines), Core 1 copies `SPRITE_OAM` (256 B, ~130 cycles) into its private Bank 9 scratchpad, guaranteeing tear-free frames and zero AHB contention during active scanlines.
+  * **`1` (default — Frame-Latched):** During VBLANK (~`180,000` idle cycles across 45 blanking lines), Core 1 copies `SPRITE_OAM` (128 B) into its private Bank 9 scratchpad and builds compact enabled-slot lists per layer, guaranteeing tear-free frames and zero AHB contention during active scanlines.
   * **`0` (Dynamic / Beam-Racing):** Core 1 reads `SPRITE_OAM` live per scanline, unlocking classic raster sprite-multiplexing tricks while preserving atomic `(x, y)` updates via a single 32-bit store.
-* **Scanline Timing Budget:**
-  1. Baseline `FRAMEBUF | FONT_RAM[TEXT_BUF]` + DMA bookkeeping: **~`740` cycles**.
-  2. OAM hit-test across all 32 slots (`(uint32_t)(y - sprite.y) < 16`): `32 × ~6` ≈ **`192` cycles**.
-  3. Per-active-sprite compositing (a 16-pixel sprite spans at most 3 bytes, fitting in one 32-bit shift): **~`25–35` cycles**.
-  4. **Worst Case (all 32 sprites overlapping on one scanline):**
-     $$740 + 192 + (32 \times 35) = 2{,}052\text{ cycles out of } 4{,}000\text{ (\~51\% of Core 1)}$$
-     Zero per-scanline sprite limit or flicker, with nearly half of Core 1 still idle.
+* **Scanline Timing Budget (hardware-validated with full 80-column text + 16 simultaneous sprites):**
+  1. `FRAMEBUF` 20-word copy + word-wise 4-column `TEXT_BUF` OR-compositing: **~`860` cycles**.
+  2. Per-active-sprite word-wise compositing (including 32-bit SWAR `HFLIP` when enabled): **~`65–100` cycles**.
+  3. **Worst Case (all 16 sprites overlapping on one scanline, half `HFLIP`'d):**
+     $$860 + (8 \times 65) + (8 \times 100) \approx 2{,}180\text{ cycles out of }\sim 2{,}720\text{ active-window cycles}$$
+     Zero per-scanline sprite limit or flicker, validated on RP2350 silicon at `126 MHz` with all 16 sprites converging simultaneously on a single scanline.

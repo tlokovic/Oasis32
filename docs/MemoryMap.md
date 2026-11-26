@@ -31,8 +31,8 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 ```text
 0x2008_2000 ┌──────────────────────────────────────────────────────────────┐
             │ Scratchpad Bank 9 (4 KB, non-striped) — BIOS PRIVATE         │
-            │   0x2008_1300–0x2008_1FFF  Core 1 Stack (sp = 0x2008_2000 ↓) │
-            │   0x2008_1200–0x2008_12FF  Latched OAM copy (256 B)          │
+            │   0x2008_1280–0x2008_1FFF  Core 1 Stack (sp = 0x2008_2000 ↓) │
+            │   0x2008_1200–0x2008_127F  Latched OAM copy (128 B)          │
             │   0x2008_10A0–0x2008_11FF  HSTX DMA cmd lists & Core 1 state │
             │   0x2008_1000–0x2008_109F  Ping-Pong Scanlines (2 × 80 B)    │
 0x2008_1000 ├──────────────────────────────────────────────────────────────┤
@@ -40,8 +40,8 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
             │   0x2008_0000–0x2008_0FFF  Core 0 IRQ Stack (mscratch ↓)     │
 0x2008_0000 ╞══════════════════════════════════════════════════════════════╡
             │ Public Video Memory Block (48 KB = 49,152 B) — PUBLIC ABI    │
-            │   0x2007_F200–0x2007_FFFF  SPRITE_PAT (56×64 B = 3,584 B)    │
-            │   0x2007_F100–0x2007_F1FF  SPRITE_OAM (32×8 B = 256 B)       │
+            │   0x2007_F180–0x2007_FFFF  SPRITE_PAT (58×64 B = 3,712 B)    │
+            │   0x2007_F100–0x2007_F17F  SPRITE_OAM (16×8 B = 128 B)       │
             │   0x2007_F0C0–0x2007_F0FF  VIDEO_CTRL (64 B)                 │
             │   0x2007_DE00–0x2007_F0BF  TEXT_BUF   (80×60 = 4,800 B)      │
             │   0x2007_D600–0x2007_DDFF  FONT_RAM   (256×8 = 2,048 B)      │
@@ -68,8 +68,8 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 | `VIDEO_FONT_RAM_BASE` | `0x2007_D600` | `0x2007_DDFF` | `2,048` | `0x0000_0800` | 512 B | `256` glyphs × `8` bytes, glyph-major (`FONT_RAM[ch * 8 + row]`), glyph `0x00` empty. |
 | `VIDEO_TEXT_BUF_BASE` | `0x2007_DE00` | `0x2007_F0BF` | `4,800` | `0x0000_12C0` | 512 B | `80×60` character overlay grid (`row * 80 + col`), OR-composited onto `FRAMEBUF`. |
 | `VIDEO_CTRL_BASE` | `0x2007_F0C0` | `0x2007_F0FF` | `64` | `0x0000_0040` | 64 B | Public video control/status block (`LATCH_OAM`, future scroll/cursor fields). |
-| `VIDEO_SPRITE_OAM_BASE` | `0x2007_F100` | `0x2007_F1FF` | `256` | `0x0000_0100` | 256 B | `32` simultaneous on-screen sprite slots (`8` B each; Sprite 0 conventionally mouse cursor). |
-| `VIDEO_SPRITE_PAT_BASE` | `0x2007_F200` | `0x2007_FFFF` | `3,584` | `0x0000_0E00` | 512 B | `56` masked `16×16` 2-plane sprite patterns (`64` B each: 32 B pixels + 32 B mask). |
+| `VIDEO_SPRITE_OAM_BASE` | `0x2007_F100` | `0x2007_F17F` | `128` | `0x0000_0080` | 256 B | `16` simultaneous on-screen sprite slots (`8` B each; Sprite 0 conventionally mouse cursor). |
+| `VIDEO_SPRITE_PAT_BASE` | `0x2007_F180` | `0x2007_FFFF` | `3,712` | `0x0000_0E80` | 128 B | `58` masked `16×16` 2-plane sprite patterns (`64` B each: 32 B pixels + 32 B mask). |
 
 * **Why `FONT_RAM` precedes `TEXT_BUF`:** Placing `FONT_RAM` (`0x0800`) immediately after `FRAMEBUF` (`0x9600`) keeps all three public video buffers aligned on clean **512-byte** (or 4 KB) boundaries with zero interior padding.
 * **Bootloader Bounds Check:** Both SD boot (`ENTER`) and serial boot (`1`) validate that `load_addr >= USER_RAM_BASE`, `entry_addr >= USER_RAM_BASE`, `entry_addr < USER_RAM_END`, and `load_addr + payload_size <= USER_RAM_END` (checking for 32-bit wrap-around) before copying any payload bytes.
@@ -104,8 +104,8 @@ Unlike Main SRAM Banks 0–7 (which are 4-way word-striped across AHB masters), 
 | **Bank 8** | `0x2008_0000`–`0x2008_0FFF` | 4,096 B | **Core 0 BIOS IRQ Stack (`mscratch` = `0x2008_1000` ↓).** Also serves as Core 0's boot/menu stack prior to transferring control to a Stage-2 payload. |
 | **Bank 9** | `0x2008_1000`–`0x2008_109F` | 160 B | **Core 1 Ping-Pong Scanline Buffers:** Buffer A (`0x2008_1000`–`0x2008_104F`, 80 B) and Buffer B (`0x2008_1050`–`0x2008_109F`, 80 B). |
 | **Bank 9** | `0x2008_10A0`–`0x2008_11FF` | 352 B | **Core 1 HSTX DMA Command Lists** (vertical/horizontal blanking & sync command words) and Core 1 local driver state. |
-| **Bank 9** | `0x2008_1200`–`0x2008_12FF` | 256 B | **Core 1 Latched OAM Copy:** Frame-latched mirror of `SPRITE_OAM` copied during VBLANK when `VIDEO_CTRL.LATCH_OAM = 1`. |
-| **Bank 9** | `0x2008_1300`–`0x2008_1FFF` | 3,328 B | **Core 1 Video Coprocessor Stack (`sp` = `0x2008_2000` ↓).** |
+| **Bank 9** | `0x2008_1200`–`0x2008_127F` | 128 B | **Core 1 Latched OAM Copy:** Frame-latched mirror of `SPRITE_OAM` copied during VBLANK when `VIDEO_CTRL.LATCH_OAM = 1`. |
+| **Bank 9** | `0x2008_1280`–`0x2008_1FFF` | 3,456 B | **Core 1 Video Coprocessor Stack (`sp` = `0x2008_2000` ↓).** |
 
 ---
 
@@ -117,7 +117,7 @@ Unlike a 6502 (where hardware forces IRQs onto the single `$0100–$01FF` stack)
 |:---|:---|:---|---:|:---|:---|:---|
 | **Core 0 User Stack** *(also used by `ecall`)* | `0x2007_4000` | Dynamic (above payload `.bss`/heap) | Up to **464 KB** (shared with program) | A few KB–tens of KB (plus ~64–128 B during `ecall`) | **Silent corruption** of user `.bss`/heap/code (bus fault only if wrapping below `0x2000_0000`). | **Silent corruption** of `FRAMEBUF` (`0x2007_4000`+), visible as stray pixels at top-left of screen. |
 | **Core 0 BIOS IRQ & Boot Stack** *(held in `mscratch`)* | `0x2008_1000` | `0x2008_0000` | **4,096 B** (4 KB) | < 128 B in non-nested IRQs; ~256–512 B during boot menu | **Silent corruption** into the top of `SPRITE_PAT` (`0x2007_FFFF` ↓, never touching BIOS state in USB DPRAM). | **Silent corruption** into Bank 9 (`0x2008_1000`+), clobbering Core 1's ping-pong scanline buffers. |
-| **Core 1 Video Coprocessor Stack** | `0x2008_2000` | `0x2008_1300` | **3,328 B** (3.25 KB) | < 128 B (flat, non-recursive scanline loop) | **Silent corruption** into Core 1's latched OAM copy (`0x2008_1200`–`0x2008_12FF`), HSTX command lists, and ping-pong buffers, glitching video. | **Hardware bus fault!** `0x2008_2000` is unmapped AHB space above SRAM → Load/Store Access Fault (`mcause = 5/7`, `riscv-privileged.pdf §3.1.12, p. 53`). |
+| **Core 1 Video Coprocessor Stack** | `0x2008_2000` | `0x2008_1280` | **3,456 B** (3.38 KB) | < 128 B (flat, non-recursive scanline loop) | **Silent corruption** into Core 1's latched OAM copy (`0x2008_1200`–`0x2008_127F`), HSTX command lists, and ping-pong buffers, glitching video. | **Hardware bus fault!** `0x2008_2000` is unmapped AHB space above SRAM → Load/Store Access Fault (`mcause = 5/7`, `riscv-privileged.pdf §3.1.12, p. 53`). |
 
 ### Design Rationale & Fault Detection
 * **Why three stacks?**

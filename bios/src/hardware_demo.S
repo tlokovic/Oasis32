@@ -15,10 +15,9 @@
  *     bouncing 32x32 XOR box (~60 px/s) scanned out by Core 1
  *   - DVI Text Overlay (VIDEO_TEXT_BUF_BASE): bouncing "Oasis32" string at
  *     character granularity starting from top-right, OR-composited by Core 1
- *   - Hardware Sprites (SPRITE_OAM / SPRITE_PAT): all 32 16x16 'R' sprites
- *     covering all 24 (in-front/behind-text) x (OPAQUE/OR/XOR) x (4 flips)
- *     combinations + 8 repeats, starting at y=232 and bouncing in [4..460] at
- *     1x/2x/4x speeds so all 32 periodically reconverge on one scanline!
+ *   - Hardware Sprites (SPRITE_OAM / SPRITE_PAT): all 16 16x16 'R' sprites
+ *     starting at y=232 and bouncing in [4..460] at 1x/2x/4x speeds so all 16
+ *     periodically reconverge on one scanline!
  * ============================================================================
  */
 
@@ -45,7 +44,7 @@
 #define DEMO_TEXT_MIN_ROW           1
 #define DEMO_TEXT_MAX_ROW           (VIDEO_TEXT_ROWS - 2)
 
-#define DEMO_SPR_COUNT              16                  /* Test 16 simultaneous sprites */
+#define DEMO_SPR_COUNT              SPRITE_OAM_COUNT    /* All 16 sprites */
 #define DEMO_SPR_START_Y            232                 /* Exact center */
 #define DEMO_SPR_MIN_Y              4                   /* 232 - 228 (div by 4) */
 #define DEMO_SPR_MAX_Y              460                 /* 232 + 228 (div by 4) */
@@ -764,7 +763,7 @@ demo_print_u8_bin:
  * ============================================================================ */
 .section .rodata, "a"
 str_splash:
-    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/32 Sprites)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI + Text + 32 Sprites; type to echo:\r\n"
+    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI + Text + 16 Sprites; type to echo:\r\n"
 str_bounce_text:
     .asciz "Oasis32"
 

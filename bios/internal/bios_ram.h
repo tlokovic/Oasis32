@@ -33,8 +33,8 @@
 #define BIOS_CORE1_LINE_A           0x20081000  /* 80 B ping-pong scanline A */
 #define BIOS_CORE1_LINE_B           0x20081050  /* 80 B ping-pong scanline B */
 #define BIOS_CORE1_CMD_LIST         0x200810A0  /* 352 B HSTX DMA cmd lists & state */
-#define BIOS_CORE1_OAM_LATCH        0x20081200  /* 256 B frame-latched OAM copy */
-#define BIOS_CORE1_STACK_BASE       0x20081300  /* 3,328 B Core 1 stack floor */
+#define BIOS_CORE1_OAM_LATCH        0x20081200  /* 128 B frame-latched OAM copy */
+#define BIOS_CORE1_STACK_BASE       0x20081280  /* 3,456 B Core 1 stack floor */
 #define BIOS_CORE1_STACK_TOP        0x20082000  /* Core 1 initial sp */
 
 /* ----------------------------------------------------------------------------

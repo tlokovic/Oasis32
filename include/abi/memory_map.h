@@ -57,14 +57,14 @@
 #define VIDEO_CTRL_SIZE         0x00000040      /* 64 bytes */
 #define VIDEO_CTRL_END          0x2007F0FF
 
-/* 32 simultaneous hardware sprite slots (8 bytes each; slot 0 = mouse cursor) */
+/* 16 simultaneous hardware sprite slots (8 bytes each; slot 0 = mouse cursor) */
 #define VIDEO_SPRITE_OAM_BASE   0x2007F100
-#define VIDEO_SPRITE_OAM_SIZE   0x00000100      /* 256 bytes */
-#define VIDEO_SPRITE_OAM_END    0x2007F1FF
+#define VIDEO_SPRITE_OAM_SIZE   0x00000080      /* 128 bytes */
+#define VIDEO_SPRITE_OAM_END    0x2007F17F
 
-/* 56 masked 16x16 2-plane sprite patterns (64 bytes each: 32 B px + 32 B mask) */
-#define VIDEO_SPRITE_PAT_BASE   0x2007F200
-#define VIDEO_SPRITE_PAT_SIZE   0x00000E00      /* 3,584 bytes */
+/* 58 masked 16x16 2-plane sprite patterns (64 bytes each: 32 B px + 32 B mask) */
+#define VIDEO_SPRITE_PAT_BASE   0x2007F180
+#define VIDEO_SPRITE_PAT_SIZE   0x00000E80      /* 3,712 bytes */
 #define VIDEO_SPRITE_PAT_END    0x2007FFFF
 
 #endif /* OASIS32_ABI_MEMORY_MAP_H */
