@@ -30,15 +30,17 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * Custom flash-resident BIOS isolates hardware details behind RISC-V `ecall` syscalls
   * **USB Keyboard & Mouse** (handled in silicon via a CH9350 HID-to-UART bridge—no software USB stack required)
   * **SD Card Storage** (raw 512-byte LBA block I/O with card-detect hot-swapping support)
-  * **USB-C Serial Port** (presents to host PCs as a standard serial device usable from PuTTY or host scripts)
+  * **USB-C Serial Port** (presents to host PCs as a standard serial device for terminal emulators or host scripts)
   * **Monotonic Microsecond Timer & VSYNC Frame Sync**
   * **Three User-Controllable Status LEDs** (Red, Green, Blue)
   * **Piezo Buzzer** (PWM tone generation)
-* **Classic "Boot from Removable Disk" & Serial Development Workflow:**
-  * **Boot from Removable SD Card:** No built-in OS—insert a card containing an `"OA32"` disk image and boot directly into demos, utilities, games, or a custom OS.
-  * **Boot from Serial (RAM-Only):** Stream a Base64-encoded disk image over the USB-C serial port straight into RAM and execute immediately for rapid host-to-target iteration with zero SD card swapping or wear.
-  * **Write SD Cards Over Serial:** Stream a Base64-encoded disk image over USB-C serial from the built-in boot menu to write persistent bootable SD cards directly on the machine.
-
+* **Classic "Boot from Removable Disk" Vibe**
+  * No built-in OS: insert an SD card containing a disk image to boot into demos, utilities, games, or a custom OS
+* **Disk-image-over-serial for rapid development**
+  * Cross-assemble an Oasis32 disk image on a modern machine, then send it over USB serial to:
+  * Boot directly from the disk image without an SD card; OR
+  * Write the image to a SD card for future use
+  
 ## Documentation
 
 *  For hardware details, see [Hardware](docs/Hardware.md).
