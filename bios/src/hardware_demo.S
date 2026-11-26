@@ -49,13 +49,14 @@
 #define DEMO_SPR_MIN_Y              4                   /* 232 - 228 (div by 4) */
 #define DEMO_SPR_MAX_Y              460                 /* 232 + 228 (div by 4) */
 
-/* Local stack-frame slots for text & 32-sprite state (16-byte-aligned 112 B) */
+/* Local stack-frame slots for text & 16-sprite state (16-byte-aligned 112 B) */
 #define STK_TEXT_NEXT_US            0
 #define STK_TEXT_COL                4
 #define STK_TEXT_ROW                8
 #define STK_TEXT_DCOL               12
 #define STK_TEXT_DROW               16
-#define STK_SPR_DY                  20      /* 32 signed int8_t vertical velocities */
+#define STK_SPR_DY                  20      /* 16 signed int8_t vertical velocities (20..35) */
+#define STK_SPR_FLIP                36      /* 0=none, 1=VFLIP, 2=HFLIP, 3=HFLIP|VFLIP */
 
 /* Assemble-time 16-pixel ASCII-art sprite row encoders (char 0 -> bit 0 LSB):
  *   '#' = opaque white (pixel=1, mask=1)
@@ -170,9 +171,10 @@ hardware_demo:
     la      a2, str_bounce_text
     call    demo_text_write
 
-    /* Initialize 16x16 'R' pattern (pat 0) and all 32 harmonic test sprites */
+    /* Initialize 16x16 'R' pattern (pat 0) and all 16 harmonic test sprites */
     addi    a0, sp, STK_SPR_DY
     call    demo_sprites_init
+    sw      zero, STK_SPR_FLIP(sp)
 
     /* Snapshot initial timestamp */
     li      a7, BIOS_TIME_US
@@ -251,6 +253,13 @@ check_timers:
     li      a1, 1
     li      a7, BIOS_LED_WRITE
     ecall
+
+    /* Cycle all 16 sprites through none -> VFLIP -> HFLIP -> HFLIP|VFLIP */
+    lw      a0, STK_SPR_FLIP(sp)
+    addi    a0, a0, 1
+    andi    a0, a0, 3
+    sw      a0, STK_SPR_FLIP(sp)
+    call    demo_sprites_set_flip
 
     li      t0, DEMO_LED_INTERVAL_US
     add     s1, s1, t0
@@ -450,11 +459,13 @@ demo_sprites_init:
     addi    t1, t1, 4
     bltu    t1, t2, 1b
 
-    /* 2. Populate DEMO_SPR_COUNT OAM slots evenly spaced across 640 px */
+    /* 2. Populate all 16 OAM slots evenly spaced across 640 px, cycling
+     *    through all 6 (in-front/behind-text) x (OPAQUE/OR/XOR) modes. */
     li      t0, VIDEO_SPRITE_OAM_BASE
-    li      t1, 0                       /* i = 0..DEMO_SPR_COUNT-1 */
+    li      t1, 0                       /* i = 0..15 */
     li      t2, 12                      /* x = 12, 52, 92, ..., 612 */
     li      t6, 0                       /* speed_idx = 0 (1x), 1 (2x), 2 (4x) */
+    li      a1, 0                       /* mode_idx = 0..5 */
 2:
     /* Store x (t2) and starting center y = 232 */
     sh      t2, SPRITE_OAM_OFF_X(t0)
@@ -462,28 +473,25 @@ demo_sprites_init:
     sh      t3, SPRITE_OAM_OFF_Y(t0)
     sb      zero, SPRITE_OAM_OFF_PAT(t0)
 
-    /* combo = (i < 24) ? i : (i - 24) */
-    mv      t3, t1
-    li      t4, 24
-    bltu    t3, t4, 3f
-    addi    t3, t3, -24
-3:
-    /* flags = ENABLE | (behind << 3) | (blend << 4) | (flip << 1) */
+    /* mode_idx 0..2: in-front (OPAQUE/OR/XOR); 3..5: behind-text (OPAQUE/OR/XOR) */
     li      t5, SPRITE_FLAG_ENABLE
-    li      t4, 12
-    bltu    t3, t4, 4f
-    addi    t3, t3, -12
+    mv      t3, a1
+    li      t4, 3
+    bltu    t3, t4, 3f
+    addi    t3, t3, -3
     ori     t5, t5, SPRITE_FLAG_BEHIND_TEXT
-4:
-    srli    t4, t3, 2                   /* blend = 0, 1, or 2 */
-    slli    t4, t4, SPRITE_BLEND_SHIFT
-    or      t5, t5, t4
-    andi    t4, t3, 3                   /* flip = 0..3 -> bits [2:1] */
-    slli    t4, t4, 1
-    or      t5, t5, t4
+3:
+    slli    t3, t3, SPRITE_BLEND_SHIFT
+    or      t5, t5, t3
     sb      t5, SPRITE_OAM_OFF_FLAGS(t0)
     sh      zero, 6(t0)                 /* reserved = 0 */
 
+    /* Advance mode_idx = (mode_idx + 1) % 6 */
+    addi    a1, a1, 1
+    li      t4, 6
+    bltu    a1, t4, 4f
+    li      a1, 0
+4:
     /* Harmonic velocity: 1 << speed_idx -> {1, 2, 4}, negated on odd i */
     li      t3, 1
     sll     t3, t3, t6
@@ -541,6 +549,35 @@ demo_sprites_step:
     bnez    t1, 1b
     ret
 .size demo_sprites_step, . - demo_sprites_step
+
+/* ----------------------------------------------------------------------------
+ * demo_sprites_set_flip(a0 = state 0..3):
+ *   0 = none, 1 = VFLIP, 2 = HFLIP, 3 = HFLIP | VFLIP on all 16 OAM slots.
+ * ---------------------------------------------------------------------------- */
+.type demo_sprites_set_flip, @function
+demo_sprites_set_flip:
+    li      t2, 0
+    andi    t3, a0, 1
+    beqz    t3, 1f
+    ori     t2, t2, SPRITE_FLAG_VFLIP
+1:
+    andi    t3, a0, 2
+    beqz    t3, 2f
+    ori     t2, t2, SPRITE_FLAG_HFLIP
+2:
+    li      t0, VIDEO_SPRITE_OAM_BASE
+    li      t1, DEMO_SPR_COUNT
+    li      t4, ~(SPRITE_FLAG_HFLIP | SPRITE_FLAG_VFLIP)
+3:
+    lbu     t3, SPRITE_OAM_OFF_FLAGS(t0)
+    and     t3, t3, t4
+    or      t3, t3, t2
+    sb      t3, SPRITE_OAM_OFF_FLAGS(t0)
+    addi    t0, t0, SPRITE_OAM_STRIDE
+    addi    t1, t1, -1
+    bnez    t1, 3b
+    ret
+.size demo_sprites_set_flip, . - demo_sprites_set_flip
 
 /* ----------------------------------------------------------------------------
  * demo_fb_draw_grid_and_border:
