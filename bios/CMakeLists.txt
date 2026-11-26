@@ -13,6 +13,7 @@ oasis32_add_bios_executable(oasis32_bios
     src/clocks.S
     src/timer.S
     src/leds.S
+    src/piezo.S
     src/uart0.S
     src/abi_dispatch.S
     src/hardware_demo.S

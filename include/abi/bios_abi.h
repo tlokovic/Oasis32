@@ -87,8 +87,12 @@
 #define BIOS_TIME_US                0x50
 
 /* ----------------------------------------------------------------------------
- * 0x60-0x6F: Audio Services — Piezo Buzzer (placeholder)
- * ---------------------------------------------------------------------------- */
+ * 0x60-0x6F: Audio Services — Piezo Buzzer
+ * ----------------------------------------------------------------------------
+ *   BIOS_AUDIO_TONE       (a0=freq_hz) -> a0 = ERR_OK (0) or ERR_INVALID_ARG (-2)
+ *     freq_hz = 0 silences the buzzer; 16..20000 Hz plays a 50% square wave.
+ */
+#define BIOS_AUDIO_TONE             0x60
 
 /* ----------------------------------------------------------------------------
  * 0x70-0x7F: Status LED Services (LED_RED=0, LED_GREEN=1, LED_BLUE=2)

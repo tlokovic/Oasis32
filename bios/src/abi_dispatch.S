@@ -81,6 +81,7 @@ trap_sync_entry:
      * Resident BIOS Service Dispatch (0x0000 - 0x00FF)
      *   0x10-0x13: Serial Console Services (UART0)
      *   0x50:      Timer Services (TIMER0 1 us monotonic clock)
+     *   0x60:      Audio Services (Piezo Buzzer)
      *   0x70-0x71: Status LED Services (Red/Green/Blue)
      * ------------------------------------------------------------------------ */
     li      t0, BIOS_SERIAL_READ
@@ -93,6 +94,8 @@ trap_sync_entry:
     beq     a7, t0, svc_serial_try_write
     li      t0, BIOS_TIME_US
     beq     a7, t0, svc_time_us
+    li      t0, BIOS_AUDIO_TONE
+    beq     a7, t0, svc_audio_tone
     li      t0, BIOS_LED_WRITE
     beq     a7, t0, svc_led_write
     li      t0, BIOS_LED_READ
@@ -119,6 +122,10 @@ svc_serial_try_write:
 
 svc_time_us:
     call    timer_read_us
+    j       ecall_return
+
+svc_audio_tone:
+    call    piezo_tone
     j       ecall_return
 
 svc_led_write:
