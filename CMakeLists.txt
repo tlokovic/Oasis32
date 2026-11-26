@@ -33,5 +33,9 @@ project(Pico2DesertIsland C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# Oasis32 shared ABI target & bare-metal build helpers
+include(cmake/oasis32.cmake)
+
 add_subdirectory(test_harness/cpp)
 add_subdirectory(test_harness/asm)
+add_subdirectory(bios)
