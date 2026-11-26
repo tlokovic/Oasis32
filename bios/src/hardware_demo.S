@@ -49,7 +49,13 @@
 #define DEMO_SPR_MIN_Y              4                   /* 232 - 228 (div by 4) */
 #define DEMO_SPR_MAX_Y              460                 /* 232 + 228 (div by 4) */
 
-/* Local stack-frame slots for text & 16-sprite state (16-byte-aligned 112 B) */
+#define DEMO_SD_INTERVAL_US         1000000             /* 1 s SD test cadence */
+#define DEMO_SD_LBA_BASE            1024                /* Rotating test ring */
+#define DEMO_SD_LBA_COUNT           16
+#define DEMO_SD_WR_BUF              USER_RAM_BASE       /* 512 B write buffer */
+#define DEMO_SD_RD_BUF              (USER_RAM_BASE + SD_SECTOR_SIZE) /* 512 B verify buffer */
+
+/* Local stack-frame slots for text, 16-sprite & SD state (16-byte-aligned 128 B) */
 #define STK_TEXT_NEXT_US            0
 #define STK_TEXT_COL                4
 #define STK_TEXT_ROW                8
@@ -57,6 +63,11 @@
 #define STK_TEXT_DROW               16
 #define STK_SPR_DY                  20      /* 16 signed int8_t vertical velocities (20..35) */
 #define STK_SPR_FLIP                36      /* 0=none, 1=VFLIP, 2=HFLIP, 3=HFLIP|VFLIP */
+#define STK_SD_PRESENT              40      /* 0=absent, 1=seated (debounced by BIOS) */
+#define STK_SD_READY                44      /* 0=uninit, 1=ready */
+#define STK_SD_NEXT_US              48      /* Next 1 s write/read/verify deadline */
+#define STK_SD_LBA                  52      /* Rotating LBA (1024..1039) */
+#define STK_SD_ITER                 56      /* Monotonic pattern iteration */
 
 /* Assemble-time 16-pixel ASCII-art sprite row encoders (char 0 -> bit 0 LSB):
  *   '#' = opaque white (pixel=1, mask=1)
@@ -109,19 +120,19 @@
 .global hardware_demo
 .type hardware_demo, @function
 hardware_demo:
-    addi    sp, sp, -112
-    sw      ra, 108(sp)
-    sw      s0, 104(sp)
-    sw      s1, 100(sp)
-    sw      s2, 96(sp)
-    sw      s3, 92(sp)
-    sw      s4, 88(sp)
-    sw      s5, 84(sp)
-    sw      s6, 80(sp)
-    sw      s7, 76(sp)
-    sw      s8, 72(sp)
-    sw      s9, 68(sp)
-    sw      s10, 64(sp)
+    addi    sp, sp, -128
+    sw      ra, 124(sp)
+    sw      s0, 120(sp)
+    sw      s1, 116(sp)
+    sw      s2, 112(sp)
+    sw      s3, 108(sp)
+    sw      s4, 104(sp)
+    sw      s5, 100(sp)
+    sw      s6, 96(sp)
+    sw      s7, 92(sp)
+    sw      s8, 88(sp)
+    sw      s9, 84(sp)
+    sw      s10, 80(sp)
 
     /* Print startup splash with live BIOS_SYS_VERSION (vMAJ.MIN.PAT) */
     la      a0, str_splash_top
@@ -224,6 +235,16 @@ hardware_demo:
     li      t0, DEMO_TEXT_STEP_US
     add     t0, s0, t0
     sw      t0, STK_TEXT_NEXT_US(sp)
+
+    /* Initialize SD test state (BIOS_SD_STATUS provides debounced CD) */
+    sw      zero, STK_SD_PRESENT(sp)
+    sw      zero, STK_SD_READY(sp)
+    sw      zero, STK_SD_ITER(sp)
+    li      t0, DEMO_SD_LBA_BASE
+    sw      t0, STK_SD_LBA(sp)
+    li      t0, DEMO_SD_INTERVAL_US
+    add     t0, s0, t0
+    sw      t0, STK_SD_NEXT_US(sp)
 
 demo_loop:
     /* 1. Non-blocking serial echo (BIOS_SERIAL_TRY_READ) */
@@ -380,7 +401,7 @@ check_text:
     /* 5. Non-blocking bouncing "Oasis32" text overlay on VIDEO_TEXT_BUF_BASE */
     lw      t1, STK_TEXT_NEXT_US(sp)
     sub     t0, s0, t1
-    bltz    t0, demo_loop
+    bltz    t0, check_sd
 
     /* Erase old string with transparent 0x00 cells */
     lw      a0, STK_TEXT_COL(sp)
@@ -432,6 +453,12 @@ check_text:
     li      t0, DEMO_TEXT_STEP_US
     add     t1, t1, t0
     sw      t1, STK_TEXT_NEXT_US(sp)
+
+check_sd:
+    /* 6. SD Card hot-plug detection & 1/s rotating 512-B write/read/verify */
+    addi    a0, sp, STK_SD_PRESENT
+    mv      a1, s0                      /* now_us */
+    call    demo_sd_poll
     j       demo_loop
 .size hardware_demo, . - hardware_demo
 
@@ -880,6 +907,257 @@ demo_print_i32_dec:
 .size demo_print_i32_dec, . - demo_print_i32_dec
 
 /* ----------------------------------------------------------------------------
+ * demo_print_u32_dec(a0 = uint32): Prints unsigned 32-bit decimal integer
+ * ---------------------------------------------------------------------------- */
+.type demo_print_u32_dec, @function
+demo_print_u32_dec:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s0, 24(sp)
+    sw      s1, 20(sp)
+
+    mv      s0, a0
+    li      s1, 0
+    li      t0, 10
+1:
+    remu    t1, s0, t0
+    divu    s0, s0, t0
+    addi    t1, t1, '0'
+    add     t2, sp, s1
+    sb      t1, 0(t2)
+    addi    s1, s1, 1
+    bnez    s0, 1b
+2:
+    addi    s1, s1, -1
+    add     t2, sp, s1
+    lbu     a0, 0(t2)
+    call    demo_putc
+    bnez    s1, 2b
+
+    lw      s1, 20(sp)
+    lw      s0, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+.size demo_print_u32_dec, . - demo_print_u32_dec
+
+/* ----------------------------------------------------------------------------
+ * demo_sd_poll(a0 = &sd_state[5], a1 = now_us):
+ *   sd_state[0] = present, [1] = ready, [2] = next_us, [3] = lba, [4] = iter
+ *   Handles card insertion/removal via BIOS_SD_STATUS/INIT/CAPACITY and runs
+ *   a 1/s rotating 512-B write/read/verify test across LBA 1024..1039.
+ * ---------------------------------------------------------------------------- */
+.type demo_sd_poll, @function
+demo_sd_poll:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s0, 24(sp)
+    sw      s1, 20(sp)
+    sw      s2, 16(sp)
+    sw      s3, 12(sp)
+    sw      s4, 8(sp)
+
+    mv      s0, a0                      /* &sd_state */
+    mv      s1, a1                      /* now_us */
+
+    li      a7, BIOS_SD_STATUS
+    ecall
+    andi    t0, a0, SD_STATUS_PRESENT
+    bnez    t0, sd_poll_present
+
+    /* Card absent: log removal edge if previously seated */
+    lw      t1, 0(s0)
+    beqz    t1, sd_poll_done
+    sw      zero, 0(s0)
+    sw      zero, 4(s0)
+    la      a0, str_sd_removed
+    call    demo_puts
+    j       sd_poll_done
+
+sd_poll_present:
+    lw      t1, 0(s0)
+    bnez    t1, sd_poll_check_ready
+
+    /* Newly detected card -> initialize via BIOS_SD_INIT */
+    li      t1, 1
+    sw      t1, 0(s0)
+    sw      zero, 4(s0)
+    la      a0, str_sd_detected
+    call    demo_puts
+
+    li      a7, BIOS_SD_INIT
+    ecall
+    bgez    a0, sd_poll_init_ok
+    la      a0, str_sd_init_fail
+    call    demo_puts
+    j       sd_poll_done
+
+sd_poll_init_ok:
+    li      t1, 1
+    sw      t1, 4(s0)
+    li      t1, DEMO_SD_LBA_BASE
+    sw      t1, 12(s0)
+    sw      zero, 16(s0)
+    li      a7, BIOS_TIME_US
+    ecall
+    li      t1, DEMO_SD_INTERVAL_US
+    add     t1, a0, t1
+    sw      t1, 8(s0)
+
+    /* Log "[SD] Ready: SDHC/SDSC, <sectors> blocks (<MiB> MiB)\r\n" */
+    la      a0, str_sd_ready
+    call    demo_puts
+    li      a7, BIOS_SD_STATUS
+    ecall
+    andi    t0, a0, SD_STATUS_SDHC
+    la      a0, str_sd_sdhc
+    bnez    t0, 1f
+    la      a0, str_sd_sdsc
+1:
+    call    demo_puts
+
+    li      a7, BIOS_SD_CAPACITY
+    ecall
+    bltz    a0, 2f
+    mv      s2, a1                      /* s2 = total sectors */
+    mv      a0, s2
+    call    demo_print_u32_dec
+    la      a0, str_sd_blocks
+    call    demo_puts
+    srli    a0, s2, 11                  /* MiB = sectors / 2048 */
+    call    demo_print_u32_dec
+    la      a0, str_sd_mib
+    call    demo_puts
+    j       sd_poll_done
+2:
+    la      a0, str_crlf
+    call    demo_puts
+    j       sd_poll_done
+
+sd_poll_check_ready:
+    lw      t1, 4(s0)
+    beqz    t1, sd_poll_done
+
+    /* Wait for 1-second test cadence */
+    lw      t1, 8(s0)
+    sub     t0, s1, t1
+    bltz    t0, sd_poll_done
+
+    lw      s2, 12(s0)                  /* s2 = lba */
+    lw      s3, 16(s0)                  /* s3 = iter */
+
+    /* Fill 512-byte write pattern: byte[i] = (i ^ iter ^ lba) & 0xFF */
+    li      t0, DEMO_SD_WR_BUF
+    li      t1, 0
+    li      t2, SD_SECTOR_SIZE
+    xor     t3, s2, s3
+3:
+    xor     t4, t1, t3
+    sb      t4, 0(t0)
+    addi    t0, t0, 1
+    addi    t1, t1, 1
+    bltu    t1, t2, 3b
+
+    /* Measure BIOS_SD_WRITE duration */
+    li      a7, BIOS_TIME_US
+    ecall
+    mv      s4, a0                      /* s4 = t_start */
+
+    mv      a0, s2
+    li      a1, DEMO_SD_WR_BUF
+    li      a7, BIOS_SD_WRITE
+    ecall
+    bltz    a0, sd_poll_wr_fail
+
+    li      a7, BIOS_TIME_US
+    ecall
+    sub     s4, a0, s4
+    li      t0, 1000
+    divu    s4, s4, t0                  /* s4 = write_ms */
+
+    /* Read back into DEMO_SD_RD_BUF */
+    mv      a0, s2
+    li      a1, DEMO_SD_RD_BUF
+    li      a7, BIOS_SD_READ
+    ecall
+    bltz    a0, sd_poll_rd_fail
+
+    /* Compare all 512 bytes */
+    li      t0, DEMO_SD_WR_BUF
+    li      t1, DEMO_SD_RD_BUF
+    li      t2, SD_SECTOR_SIZE
+    li      t5, 1                       /* pass = 1 */
+4:
+    lbu     t3, 0(t0)
+    lbu     t4, 0(t1)
+    beq     t3, t4, 5f
+    li      t5, 0
+    j       6f
+5:
+    addi    t0, t0, 1
+    addi    t1, t1, 1
+    addi    t2, t2, -1
+    bnez    t2, 4b
+6:
+    sw      t5, 0(sp)                   /* Save pass/fail flag */
+
+    la      a0, str_sd_lba
+    call    demo_puts
+    mv      a0, s2
+    call    demo_print_u32_dec
+    la      a0, str_sd_iter
+    call    demo_puts
+    mv      a0, s3
+    call    demo_print_u32_dec
+    la      a0, str_sd_wrms
+    call    demo_puts
+    mv      a0, s4
+    call    demo_print_u32_dec
+    lw      t5, 0(sp)
+    la      a0, str_sd_pass
+    bnez    t5, 7f
+    la      a0, str_sd_fail
+7:
+    call    demo_puts
+    j       sd_poll_advance
+
+sd_poll_wr_fail:
+    la      a0, str_sd_wr_fail
+    call    demo_puts
+    j       sd_poll_advance
+
+sd_poll_rd_fail:
+    la      a0, str_sd_rd_fail
+    call    demo_puts
+
+sd_poll_advance:
+    /* Advance rotating LBA (1024..1039), iter++, and schedule next 1 s */
+    addi    s2, s2, 1
+    li      t0, (DEMO_SD_LBA_BASE + DEMO_SD_LBA_COUNT)
+    bltu    s2, t0, 8f
+    li      s2, DEMO_SD_LBA_BASE
+8:
+    sw      s2, 12(s0)
+    addi    s3, s3, 1
+    sw      s3, 16(s0)
+    li      a7, BIOS_TIME_US
+    ecall
+    li      t0, DEMO_SD_INTERVAL_US
+    add     t0, a0, t0
+    sw      t0, 8(s0)
+
+sd_poll_done:
+    lw      s4, 8(sp)
+    lw      s3, 12(sp)
+    lw      s2, 16(sp)
+    lw      s1, 20(sp)
+    lw      s0, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+.size demo_sd_poll, . - demo_sd_poll
+
+/* ----------------------------------------------------------------------------
  * demo_log_kbd_event(a0 = packed key_event):
  *   Prints "[KBD] DN/UP code=0xXX mod=0xYY\r\n"
  * ---------------------------------------------------------------------------- */
@@ -1042,7 +1320,7 @@ demo_log_mouse_btn:
 str_splash_top:
     .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v"
 str_splash_bot:
-    .asciz "\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites + KBD/Mouse)\r\n========================================\r\nReady. LEDs 1/s, DVI + Text + 16 Sprites, KBD/Mouse -> serial; type to echo:\r\n"
+    .asciz "\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites + KBD/Mouse + SD)\r\n========================================\r\nReady. LEDs 1/s, DVI/Sprites, KBD/Mouse, SD 1/s -> serial; type to echo:\r\n"
 str_bounce_text:
     .asciz "Oasis32"
 
@@ -1109,3 +1387,33 @@ str_mouse_btn_at:
     .asciz " at ("
 str_rparen_crlf:
     .asciz ")\r\n"
+str_sd_detected:
+    .asciz "[SD] Card detected, initializing...\r\n"
+str_sd_removed:
+    .asciz "[SD] Card removed\r\n"
+str_sd_init_fail:
+    .asciz "[SD] Init FAILED\r\n"
+str_sd_ready:
+    .asciz "[SD] Ready: "
+str_sd_sdhc:
+    .asciz "SDHC/SDXC, "
+str_sd_sdsc:
+    .asciz "SDSC, "
+str_sd_blocks:
+    .asciz " blocks ("
+str_sd_mib:
+    .asciz " MiB)\r\n"
+str_sd_lba:
+    .asciz "[SD] LBA="
+str_sd_iter:
+    .asciz " iter="
+str_sd_wrms:
+    .asciz " write="
+str_sd_pass:
+    .asciz "ms PASS\r\n"
+str_sd_fail:
+    .asciz "ms FAIL (mismatch)\r\n"
+str_sd_wr_fail:
+    .asciz "[SD] WRITE FAIL\r\n"
+str_sd_rd_fail:
+    .asciz "[SD] READ FAIL\r\n"

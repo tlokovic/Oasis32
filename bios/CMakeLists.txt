@@ -17,6 +17,7 @@ oasis32_add_bios_executable(oasis32_bios
     src/piezo.S
     src/uart0.S
     src/input.S
+    src/sd.S
     src/font.S
     src/video.S
     src/abi_dispatch.S

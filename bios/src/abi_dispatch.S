@@ -131,6 +131,16 @@ trap_sync_entry:
     beq     a7, t0, svc_mouse_state
     li      t0, BIOS_MOUSE_SET_POS
     beq     a7, t0, svc_mouse_set_pos
+    li      t0, BIOS_SD_STATUS
+    beq     a7, t0, svc_sd_status
+    li      t0, BIOS_SD_INIT
+    beq     a7, t0, svc_sd_init
+    li      t0, BIOS_SD_READ
+    beq     a7, t0, svc_sd_read
+    li      t0, BIOS_SD_WRITE
+    beq     a7, t0, svc_sd_write
+    li      t0, BIOS_SD_CAPACITY
+    beq     a7, t0, svc_sd_capacity
     li      t0, BIOS_TIME_US
     beq     a7, t0, svc_time_us
     li      t0, BIOS_AUDIO_TONE
@@ -230,6 +240,26 @@ svc_mouse_state:
 
 svc_mouse_set_pos:
     call    input_mouse_set_pos
+    j       ecall_return
+
+svc_sd_status:
+    call    sd_status
+    j       ecall_return
+
+svc_sd_init:
+    call    sd_init
+    j       ecall_return
+
+svc_sd_read:
+    call    sd_read
+    j       ecall_return
+
+svc_sd_write:
+    call    sd_write
+    j       ecall_return
+
+svc_sd_capacity:
+    call    sd_capacity
     j       ecall_return
 
 svc_time_us:

@@ -122,8 +122,19 @@
 #define BIOS_MOUSE_SET_POS          0x3F
 
 /* ----------------------------------------------------------------------------
- * 0x40-0x4F: Storage Services — SD Card Block I/O (placeholder)
- * ---------------------------------------------------------------------------- */
+ * 0x40-0x4F: Storage Services — SD Card Block I/O (512-byte LBA sectors)
+ * ----------------------------------------------------------------------------
+ *   BIOS_SD_STATUS   ()                   -> a0 = SD_STATUS_* bitmask (>= 0)
+ *   BIOS_SD_INIT     ()                   -> a0 = ERR_OK, ERR_NO_DEVICE, or ERR_IO
+ *   BIOS_SD_READ     (a0=lba, a1=buf_ptr) -> a0 = ERR_OK, ERR_NO_DEVICE, ERR_INVALID_ARG, or ERR_IO
+ *   BIOS_SD_WRITE    (a0=lba, a1=buf_ptr) -> a0 = ERR_OK, ERR_NO_DEVICE, ERR_INVALID_ARG, or ERR_IO
+ *   BIOS_SD_CAPACITY ()                   -> a0 = ERR_OK or ERR_NO_DEVICE, a1 = total 512-byte sectors
+ */
+#define BIOS_SD_STATUS                  0x40
+#define BIOS_SD_INIT                    0x41
+#define BIOS_SD_READ                    0x42
+#define BIOS_SD_WRITE                   0x43
+#define BIOS_SD_CAPACITY                0x44
 
 /* ----------------------------------------------------------------------------
  * 0x50-0x5F: Timer Services (1 MHz / 1 us monotonic clock)

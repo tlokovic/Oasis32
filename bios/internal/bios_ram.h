@@ -61,5 +61,10 @@
 
 /* Named slots inside BIOS_MISC_STATE_BASE (0x50100540) */
 #define BIOS_OS_ECALL_HANDLER_ADDR  0x50100540  /* uint32_t fn ptr (0 = none) */
+#define BIOS_SD_FLAGS_ADDR          0x50100544  /* uint32_t SD_STATUS_READY|SDHC */
+#define BIOS_SD_SECTORS_ADDR        0x50100548  /* uint32_t total 512-B sectors */
+#define BIOS_SD_CD_STABLE_ADDR      0x5010054C  /* uint32_t debounced CD (0/1) */
+#define BIOS_SD_CD_LAST_RAW_ADDR    0x50100550  /* uint32_t last raw CD (0/1) */
+#define BIOS_SD_CD_CHANGE_US_ADDR   0x50100554  /* uint32_t last raw CD edge us */
 
 #endif /* OASIS32_BIOS_RAM_H */

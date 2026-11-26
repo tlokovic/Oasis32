@@ -64,6 +64,9 @@
  * Block Storage (SD Card)
  * ---------------------------------------------------------------------------- */
 #define SD_SECTOR_SIZE              512
+#define SD_STATUS_PRESENT           (1 << 0) /* Card physically seated */
+#define SD_STATUS_READY             (1 << 1) /* Card initialized & ready */
+#define SD_STATUS_SDHC              (1 << 2) /* 1 = SDHC/SDXC (LBA), 0 = SDSC */
 
 /* ----------------------------------------------------------------------------
  * Audio (Piezo Buzzer)

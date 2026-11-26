@@ -127,6 +127,8 @@
 #define IO_FUNCSEL_UART             2
 #define IO_FUNCSEL_PWM              4
 #define IO_FUNCSEL_SIO              5
+#define IO_BANK0_INTR0_OFF          0x230       /* §9.11.1, Raw Interrupts (GP0-7) */
+#define IO_INTR0_GPIO6_EDGE_HIGH    (1 << 27)   /* WC: GP6 rising edge (SD removed) */
 
 #define PADS_ISO_BIT                (1 << 8)    /* Resets to 1 on RP2350! */
 #define PADS_OD_BIT                 (1 << 7)
