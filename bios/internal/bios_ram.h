@@ -18,11 +18,16 @@
 #define OASIS32_BIOS_RAM_H
 
 /* ----------------------------------------------------------------------------
- * Scratchpad Bank 8 (4 KB, non-striped): Core 0 BIOS IRQ & Boot Stack
+ * Scratchpad Bank 8 (4 KB, non-striped): Core 0 BIOS Boot & IRQ Stacks
+ *   - 0x20080000-0x20080BFF (3 KB): Core 0 foreground BIOS/boot-menu stack
+ *   - 0x20080C00-0x20080FFF (1 KB): Core 0 private IRQ stack (mscratch)
+ * Keeping these disjoint ensures Core 0 IRQs never clobber foreground BIOS
+ * frames (e.g. hardware_demo / boot menu) before a Stage-2 payload runs.
  * ---------------------------------------------------------------------------- */
 #define BIOS_SCRATCH8_BASE          0x20080000
 #define BIOS_SCRATCH8_SIZE          0x00001000
-#define BIOS_CORE0_STACK_TOP        0x20081000  /* Loaded into sp at boot & mscratch */
+#define BIOS_CORE0_STACK_TOP        0x20080C00  /* Loaded into sp at boot */
+#define BIOS_CORE0_IRQ_STACK_TOP    0x20081000  /* Loaded into mscratch for IRQs */
 
 /* ----------------------------------------------------------------------------
  * Scratchpad Bank 9 (4 KB, non-striped): Core 1 Video Coprocessor

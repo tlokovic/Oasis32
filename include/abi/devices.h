@@ -85,19 +85,33 @@
 #define LED_BIT_BLUE                (1 << 2)
 
 /* ----------------------------------------------------------------------------
- * USB HID Keyboard Modifier & Mouse Button Bitmasks
+ * Keyboard & Mouse Input Event Bitfields & Bitmasks
  * ---------------------------------------------------------------------------- */
-#define HID_MOD_LCTRL               (1 << 0)
-#define HID_MOD_LSHIFT              (1 << 1)
-#define HID_MOD_LALT                (1 << 2)
-#define HID_MOD_LGUI                (1 << 3)
-#define HID_MOD_RCTRL               (1 << 4)
-#define HID_MOD_RSHIFT              (1 << 5)
-#define HID_MOD_RALT                (1 << 6)
-#define HID_MOD_RGUI                (1 << 7)
+#define KEY_MOD_LCTRL               (1 << 0)
+#define KEY_MOD_LSHIFT              (1 << 1)
+#define KEY_MOD_LALT                (1 << 2)
+#define KEY_MOD_LGUI                (1 << 3)
+#define KEY_MOD_RCTRL               (1 << 4)
+#define KEY_MOD_RSHIFT              (1 << 5)
+#define KEY_MOD_RALT                (1 << 6)
+#define KEY_MOD_RGUI                (1 << 7)
+
+#define KEY_EVENT_CODE_MASK         0x00FF
+#define KEY_EVENT_MOD_SHIFT         8
+#define KEY_EVENT_MOD_MASK          0xFF00
+#define KEY_EVENT_DOWN_BIT          (1 << 16)
+#define KEY_STATE_MAX_KEYS          6
+#define KEY_STATE_BUF_SIZE          8
 
 #define MOUSE_BTN_LEFT              (1 << 0)
 #define MOUSE_BTN_RIGHT             (1 << 1)
 #define MOUSE_BTN_MIDDLE            (1 << 2)
+#define MOUSE_BTN_SIDE1             (1 << 3)
+#define MOUSE_BTN_SIDE2             (1 << 4)
+
+#define MOUSE_EVENT_BTN_MASK        0x00FF
+#define MOUSE_EVENT_STATE_SHIFT     8
+#define MOUSE_EVENT_STATE_MASK      0xFF00
+#define MOUSE_EVENT_DOWN_BIT        (1 << 16)
 
 #endif /* OASIS32_ABI_DEVICES_H */

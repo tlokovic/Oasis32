@@ -168,6 +168,11 @@
 #define UART_FR_TXFE_BIT            (1 << 7)
 #define UART_LCR_8N1_FIFO           0x70
 #define UART_CR_EN_TX_RX            0x301
+#define UART_IFLS_RX_1_8            (0 << 3)    /* RX FIFO IRQ at >= 1/8 full (4 B) */
+#define UART_IMSC_RXIM_BIT          (1 << 4)    /* Receive FIFO threshold IRQ mask */
+#define UART_IMSC_RTIM_BIT          (1 << 6)    /* Receive timeout IRQ mask */
+#define UART_ICR_RXIC_BIT           (1 << 4)
+#define UART_ICR_RTIC_BIT           (1 << 6)
 
 /* ----------------------------------------------------------------------------
  * PL022 SPI0 Registers (§12.3.5, p. 958)
@@ -242,5 +247,10 @@
 #define MIE_MEIE_BIT                (1 << 11)
 #define MSTATUS_MIE_BIT             (1 << 3)
 #define MCAUSE_ECALL_M              11
+
+/* RP2350 System IRQ Numbers (rp2350-datasheet.pdf §3.2, Table 103) */
+#define IRQ_UART1                   34
+/* Hazard3 h3.meiea window = 34 >> 4 = 2, bit = 16 + (34 & 15) = 18 */
+#define H3_IRQ_UART1_MEIEA          ((1 << (16 + (IRQ_UART1 & 15))) | (IRQ_UART1 >> 4))
 
 #endif /* OASIS32_BIOS_HW_RP2350_REGS_H */

@@ -211,7 +211,7 @@ demo_loop:
     /* 1. Non-blocking serial echo (BIOS_SERIAL_TRY_READ) */
     li      a7, BIOS_SERIAL_TRY_READ
     ecall
-    bltz    a0, check_timers            /* ERR_EMPTY (-3) -> no byte waiting */
+    bltz    a0, check_input             /* ERR_EMPTY (-3) -> no byte waiting */
 
     mv      s0, a0                      /* Save received byte */
     la      a0, str_rx_prefix
@@ -228,6 +228,29 @@ demo_loop:
     call    demo_print_u8_bin
     la      a0, str_crlf
     call    demo_puts
+
+check_input:
+    /* 1b. Non-blocking Keyboard & Mouse event logging (BIOS_KEYBOARD_* / BIOS_MOUSE_*) */
+poll_kbd_loop:
+    li      a7, BIOS_KEYBOARD_TRY_READ
+    ecall
+    bltz    a0, poll_mouse_pos_loop
+    call    demo_log_kbd_event
+    j       poll_kbd_loop
+
+poll_mouse_pos_loop:
+    li      a7, BIOS_MOUSE_POS_TRY_READ
+    ecall
+    bltz    a0, poll_mouse_btn_loop
+    call    demo_log_mouse_pos
+    j       poll_mouse_pos_loop
+
+poll_mouse_btn_loop:
+    li      a7, BIOS_MOUSE_BUTTON_TRY_READ
+    ecall
+    bltz    a0, check_timers
+    call    demo_log_mouse_btn
+    j       poll_mouse_btn_loop
 
 check_timers:
     /* Snapshot current monotonic timestamp once per iteration */
@@ -797,12 +820,209 @@ demo_print_u8_bin:
     ret
 .size demo_print_u8_bin, . - demo_print_u8_bin
 
+/* ----------------------------------------------------------------------------
+ * demo_print_i32_dec(a0 = signed int32): Prints signed decimal integer
+ * ---------------------------------------------------------------------------- */
+.type demo_print_i32_dec, @function
+demo_print_i32_dec:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s0, 24(sp)
+    sw      s1, 20(sp)
+
+    mv      s0, a0
+    bgez    s0, 1f
+    li      a0, '-'
+    call    demo_putc
+    neg     s0, s0
+1:
+    /* Build digits in reverse in sp[0..11] */
+    li      s1, 0                       /* digit count */
+    li      t0, 10
+2:
+    remu    t1, s0, t0
+    divu    s0, s0, t0
+    addi    t1, t1, '0'
+    add     t2, sp, s1
+    sb      t1, 0(t2)
+    addi    s1, s1, 1
+    bnez    s0, 2b
+3:
+    addi    s1, s1, -1
+    add     t2, sp, s1
+    lbu     a0, 0(t2)
+    call    demo_putc
+    bnez    s1, 3b
+
+    lw      s1, 20(sp)
+    lw      s0, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+.size demo_print_i32_dec, . - demo_print_i32_dec
+
+/* ----------------------------------------------------------------------------
+ * demo_log_kbd_event(a0 = packed key_event):
+ *   Prints "[KBD] DN/UP code=0xXX mod=0xYY\r\n"
+ * ---------------------------------------------------------------------------- */
+.type demo_log_kbd_event, @function
+demo_log_kbd_event:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s0, 8(sp)
+    mv      s0, a0
+
+    la      a0, str_kbd_prefix
+    call    demo_puts
+    li      t0, KEY_EVENT_DOWN_BIT
+    and     t0, s0, t0
+    beqz    t0, 1f
+    la      a0, str_ev_dn
+    j       2f
+1:
+    la      a0, str_ev_up
+2:
+    call    demo_puts
+
+    la      a0, str_kbd_code
+    call    demo_puts
+    andi    a0, s0, KEY_EVENT_CODE_MASK
+    call    demo_print_u8_hex
+
+    la      a0, str_kbd_mod
+    call    demo_puts
+    srli    a0, s0, KEY_EVENT_MOD_SHIFT
+    andi    a0, a0, 0xFF
+    call    demo_print_u8_hex
+
+    la      a0, str_crlf
+    call    demo_puts
+
+    lw      s0, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+.size demo_log_kbd_event, . - demo_log_kbd_event
+
+/* ----------------------------------------------------------------------------
+ * demo_log_mouse_pos(a1=x, a2=y, a3=dx, a4=dy, a5=dwheel):
+ *   Prints "[MOUSE] pos=(X,Y) d=(dx,dy) w=dw\r\n"
+ * ---------------------------------------------------------------------------- */
+.type demo_log_mouse_pos, @function
+demo_log_mouse_pos:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s0, 24(sp)
+    sw      s1, 20(sp)
+    sw      s2, 16(sp)
+    sw      s3, 12(sp)
+    sw      s4, 8(sp)
+
+    mv      s0, a1                      /* x */
+    mv      s1, a2                      /* y */
+    mv      s2, a3                      /* dx */
+    mv      s3, a4                      /* dy */
+    mv      s4, a5                      /* dwheel */
+
+    la      a0, str_mouse_pos
+    call    demo_puts
+    mv      a0, s0
+    call    demo_print_i32_dec
+    li      a0, ','
+    call    demo_putc
+    mv      a0, s1
+    call    demo_print_i32_dec
+
+    la      a0, str_mouse_delta
+    call    demo_puts
+    mv      a0, s2
+    call    demo_print_i32_dec
+    li      a0, ','
+    call    demo_putc
+    mv      a0, s3
+    call    demo_print_i32_dec
+
+    la      a0, str_mouse_wheel
+    call    demo_puts
+    mv      a0, s4
+    call    demo_print_i32_dec
+    la      a0, str_crlf
+    call    demo_puts
+
+    lw      s4, 8(sp)
+    lw      s3, 12(sp)
+    lw      s2, 16(sp)
+    lw      s1, 20(sp)
+    lw      s0, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+.size demo_log_mouse_pos, . - demo_log_mouse_pos
+
+/* ----------------------------------------------------------------------------
+ * demo_log_mouse_btn(a0=packed btn_event, a1=x, a2=y):
+ *   Prints "[MOUSE] BTN DN/UP btn=0xXX mask=0xYY at (X,Y)\r\n"
+ * ---------------------------------------------------------------------------- */
+.type demo_log_mouse_btn, @function
+demo_log_mouse_btn:
+    addi    sp, sp, -32
+    sw      ra, 28(sp)
+    sw      s0, 24(sp)
+    sw      s1, 20(sp)
+    sw      s2, 16(sp)
+
+    mv      s0, a0                      /* btn_event */
+    mv      s1, a1                      /* x */
+    mv      s2, a2                      /* y */
+
+    la      a0, str_mouse_btn_prefix
+    call    demo_puts
+    li      t0, MOUSE_EVENT_DOWN_BIT
+    and     t0, s0, t0
+    beqz    t0, 1f
+    la      a0, str_ev_dn
+    j       2f
+1:
+    la      a0, str_ev_up
+2:
+    call    demo_puts
+
+    la      a0, str_mouse_btn_id
+    call    demo_puts
+    andi    a0, s0, MOUSE_EVENT_BTN_MASK
+    call    demo_print_u8_hex
+
+    la      a0, str_mouse_btn_mask
+    call    demo_puts
+    srli    a0, s0, MOUSE_EVENT_STATE_SHIFT
+    andi    a0, a0, 0xFF
+    call    demo_print_u8_hex
+
+    la      a0, str_mouse_btn_at
+    call    demo_puts
+    mv      a0, s1
+    call    demo_print_i32_dec
+    li      a0, ','
+    call    demo_putc
+    mv      a0, s2
+    call    demo_print_i32_dec
+    la      a0, str_rparen_crlf
+    call    demo_puts
+
+    lw      s2, 16(sp)
+    lw      s1, 20(sp)
+    lw      s0, 24(sp)
+    lw      ra, 28(sp)
+    addi    sp, sp, 32
+    ret
+.size demo_log_mouse_btn, . - demo_log_mouse_btn
+
 /* ============================================================================
  * Read-Only Strings (.rodata in XIP Flash)
  * ============================================================================ */
 .section .rodata, "a"
 str_splash:
-    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI + Text + 16 Sprites; type to echo:\r\n"
+    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/16 Sprites + KBD/Mouse)\r\n========================================\r\nReady. LEDs 1/s, DVI + Text + 16 Sprites, KBD/Mouse -> serial; type to echo:\r\n"
 str_bounce_text:
     .asciz "Oasis32"
 
@@ -843,3 +1063,29 @@ str_bin_sep:
     .asciz " bin=0b"
 str_crlf:
     .asciz "\r\n"
+str_kbd_prefix:
+    .asciz "[KBD] "
+str_ev_dn:
+    .asciz "DN"
+str_ev_up:
+    .asciz "UP"
+str_kbd_code:
+    .asciz " code=0x"
+str_kbd_mod:
+    .asciz " mod=0x"
+str_mouse_pos:
+    .asciz "[MOUSE] pos=("
+str_mouse_delta:
+    .asciz ") d=("
+str_mouse_wheel:
+    .asciz ") w="
+str_mouse_btn_prefix:
+    .asciz "[MOUSE] BTN "
+str_mouse_btn_id:
+    .asciz " btn=0x"
+str_mouse_btn_mask:
+    .asciz " mask=0x"
+str_mouse_btn_at:
+    .asciz " at ("
+str_rparen_crlf:
+    .asciz ")\r\n"

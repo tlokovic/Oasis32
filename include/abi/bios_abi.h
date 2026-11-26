@@ -79,8 +79,40 @@
 #define BIOS_VIDEO_RESET_FONT       0x22
 
 /* ----------------------------------------------------------------------------
- * 0x30-0x3F: Input Services — Keyboard & Mouse (placeholder)
- * ---------------------------------------------------------------------------- */
+ * 0x30-0x3F: Input Services — Keyboard & Mouse
+ * ----------------------------------------------------------------------------
+ * Keyboard:
+ *   BIOS_KEYBOARD_READ         ()           -> a0 = key_event [blocking]
+ *   BIOS_KEYBOARD_TRY_READ     ()           -> a0 = key_event or ERR_EMPTY (-3)
+ *   BIOS_KEYBOARD_FLUSH        ()           -> a0 = ERR_OK (0)
+ *   BIOS_KEYBOARD_STATE        (a0=dst_ptr) -> a0 = count (0..6) or ERR_INVALID_ARG,
+ *                                              a1 = modifiers (KEY_MOD_* mask)
+ *     Writes count active keycodes to dst_ptr[0..count-1], zero-padded to 8 B.
+ *
+ * Mouse (screen-space 0..639 x 0..479, boot default 320x240):
+ *   BIOS_MOUSE_POS_READ        ()           -> a0 = 0, a1 = x, a2 = y,
+ *                                              a3 = dx, a4 = dy, a5 = dwheel [blocking]
+ *   BIOS_MOUSE_POS_TRY_READ    ()           -> same, or a0 = ERR_EMPTY (-3)
+ *   BIOS_MOUSE_POS_FLUSH       ()           -> a0 = ERR_OK (0)
+ *   BIOS_MOUSE_BUTTON_READ     ()           -> a0 = btn_event, a1 = x, a2 = y [blocking]
+ *   BIOS_MOUSE_BUTTON_TRY_READ ()           -> same, or a0 = ERR_EMPTY (-3)
+ *   BIOS_MOUSE_BUTTON_FLUSH    ()           -> a0 = ERR_OK (0)
+ *   BIOS_MOUSE_STATE           ()           -> a0 = buttons, a1 = x, a2 = y
+ *   BIOS_MOUSE_SET_POS         (a0=x, a1=y) -> a0 = ERR_OK (0) or ERR_INVALID_ARG (-2)
+ */
+#define BIOS_KEYBOARD_READ          0x30
+#define BIOS_KEYBOARD_TRY_READ      0x31
+#define BIOS_KEYBOARD_FLUSH         0x32
+#define BIOS_KEYBOARD_STATE         0x33
+
+#define BIOS_MOUSE_POS_READ         0x38
+#define BIOS_MOUSE_POS_TRY_READ     0x39
+#define BIOS_MOUSE_POS_FLUSH        0x3A
+#define BIOS_MOUSE_BUTTON_READ      0x3B
+#define BIOS_MOUSE_BUTTON_TRY_READ  0x3C
+#define BIOS_MOUSE_BUTTON_FLUSH     0x3D
+#define BIOS_MOUSE_STATE            0x3E
+#define BIOS_MOUSE_SET_POS          0x3F
 
 /* ----------------------------------------------------------------------------
  * 0x40-0x4F: Storage Services — SD Card Block I/O (placeholder)
