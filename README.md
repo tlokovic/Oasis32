@@ -26,6 +26,7 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * 16 16x16 hardware sprites, assignable to 58 memory-mapped animation/tile patterns, each with its own opacity mask
   * Sprites support horizontal and vertical flipping, three blending modes (opaque, bitwise OR, bitwise XOR), and can render above or below the text layer
   * Sprite zero conventionally used as a customizable hardware mouse cursor
+  * A second Hazard3 core acts as a dedicated video coprocessor driving all of the above with zero CPU overhead and no required synchronization on the main core.
 * **Peripheral Access Through Stable `ecall` Syscall ABI**
   * Custom flash-resident BIOS isolates hardware details behind RISC-V `ecall` syscalls
   * **USB Keyboard & Mouse** (handled in silicon via a CH9350 HID-to-UART bridge—no software USB stack required)
