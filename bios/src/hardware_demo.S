@@ -95,15 +95,26 @@ hardware_demo:
     mv      a1, s8
     call    demo_fb_xor_box
 
-    /* Fill 80x60 VIDEO_TEXT_BUF_BASE with 'X' (0x58) to visualize cell alignment;
-     * bouncing "Oasis32" clears cells to 0x00 as it passes over them. */
+    /* Tile the full 256-glyph CP437 font table in 16x16 blocks across 80x60
+     * VIDEO_TEXT_BUF_BASE (5 wide x 3.75 tall): glyph = ((row & 15) << 4) | (col & 15).
+     * Bouncing "Oasis32" clears cells to 0x00 as it passes over them. */
     li      t0, VIDEO_TEXT_BUF_BASE
-    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
-    li      t2, 0x58585858              /* "XXXX" */
+    li      t1, 0                       /* row = 0..59 */
+    li      t2, VIDEO_TEXT_ROWS
+    li      t3, VIDEO_TEXT_COLS
 1:
-    sw      t2, 0(t0)
-    addi    t0, t0, 4
-    bltu    t0, t1, 1b
+    andi    t4, t1, 15
+    slli    t4, t4, 4                   /* row_hi = (row & 15) << 4 */
+    li      t5, 0                       /* col = 0..79 */
+2:
+    andi    t6, t5, 15
+    or      t6, t4, t6                  /* glyph = ((row & 15) << 4) | (col & 15) */
+    sb      t6, 0(t0)
+    addi    t0, t0, 1
+    addi    t5, t5, 1
+    bltu    t5, t3, 2b
+    addi    t1, t1, 1
+    bltu    t1, t2, 1b
 
     /* Place initial "Oasis32" text overlay at top-right corner (col=72, row=1) */
     li      t0, DEMO_TEXT_MAX_COL
