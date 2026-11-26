@@ -133,9 +133,9 @@ With bare-metal peripheral control proven in Phase 2, Phase 3 builds the permane
 * Authored the private BIOS headers (`bios/internal/hw/`, `bios_ram.h`, `bios_flash.h`, `bios_config.h`) and `bios/ld/bios.ld.S`.
 
 ### Sub-Phase 3b (IN PROGRESS): Subsystem-by-Subsystem Driver & `ecall` ABI Bring-Up (`hardware_demo`)
-Rather than implementing all drivers first and wiring the `ecall` ABI afterward, Phase 3b brings up **one subsystem at a time**—implementing its resident driver under `bios/src/`, finalizing its public `ecall` contract in `include/abi/`, wiring it into the Vectored `mtvec` dispatcher (`bios/src/abi_dispatch.S`), and immediately validating it on hardware via a temporary `bios/src/hardware_demo.S` called from `bios/src/main.S`.
+Rather than implementing all drivers first and wiring the `ecall` ABI afterward, Phase 3b brings up **one subsystem at a time**—implementing its resident driver under `bios/src/`, finalizing its public `ecall` contract in `include/abi/`, wiring it into the Vectored `mtvec` dispatcher (`bios/src/abi_dispatch.S`), and immediately validating it on hardware via `bios/src/hardware_demo.S` called from `bios/src/main.S`.
 
-* **Strict ABI Validation Rule:** `bios/src/hardware_demo.S` reconstructs the full Phase 2 test harness behaviors using **only** `include/abi/` headers and `ecall` BIOS calls (zero `bios/internal/` includes or direct MMIO). Once all subsystems are validated, `hardware_demo.S` will be removed from the BIOS (or moved into `disks/` as a standalone Stage-2 test disk) and replaced in `bios/src/main.S` by the real BIOS boot menu and bootloader.
+* **Strict ABI Validation Rule:** `bios/src/hardware_demo.S` reconstructs the full Phase 2 test harness behaviors using **only** `include/abi/` headers and `ecall` BIOS calls (zero `bios/internal/` includes or direct MMIO). Once all subsystems are validated, `hardware_demo.S` remains permanently resident in the System ROM as boot menu option `3`, providing rapid on-device diagnostics and regression testing across future BIOS cleanups and refactorings.
 * **Memory Isolation:** All BIOS-private driver state is confined to the 4 KB USB DPRAM (`0x5010_0000`, with `clk_usb` enabled from 12 MHz `XOSC` so `RESETS.RESET_DONE.USBCTRL` asserts while the USB controller remains disabled) and BIOS stacks/scanline buffers to Scratchpad Banks 8–9 (`bios_ram.h`), leaving 100% of Main SRAM user-facing (`memory_map.h`).
 * **Subsystem Checklist:**
   * [x] **Core Bring-Up & Vectored `mtvec` Dispatcher:** `boot.S` (`PICOBIN` `IMAGE_DEF`, Bank 8 stack, USB DPRAM zeroing, `mtvec` Vectored Mode), `clocks.S` (12 MHz `XOSC` → 126 MHz `PLL_SYS` + 12 MHz `clk_usb`), and `abi_dispatch.S` (`ecall` dispatcher + OS extension hook).
@@ -149,13 +149,13 @@ Rather than implementing all drivers first and wiring the `ecall` ABI afterward,
   * [ ] **System Control (`BIOS_BLK_SYS` `0x00`):** Define and implement `SYS_VERSION`, `SYS_REBOOT`, and `SYS_SET_OS_ECALL_HANDLER`.
 
 ### Sub-Phase 3c: Interactive Boot Menu, Base64 Serial Loader & Stage-1 SD Bootloader
-Once all BIOS syscalls are validated via `hardware_demo.S`, replace `bios/src/main.S`'s call to `hardware_demo()` with the intended Stage-1 BIOS behavior:
-* Implement the interactive startup boot menu over `UART0` (splash + `ENTER` SD boot, `1` Base64 serial-to-SRAM boot, `2` Base64 serial-to-SD disk writer buffered in User SRAM), including `"Insert boot disk"` / `"Insert disk to write"` card-detect waits and error recovery back to the boot menu.
+Once all BIOS syscalls are validated via `hardware_demo.S`, update `bios/src/main.S` to present the interactive boot menu (keeping `hardware_demo()` accessible as menu option `3`) and implement the Stage-1 loaders:
+* Implement the interactive startup boot menu over `UART0` (splash + `ENTER` SD boot, `1` Base64 serial-to-SRAM boot, `2` Base64 serial-to-SD disk writer buffered in User SRAM, `3` built-in hardware demo), including `"Insert boot disk"` / `"Insert disk to write"` card-detect waits and error recovery back to the boot menu.
 * Implement the Stage-1 SD bootloader (`bios/src/bootloader.S`): detect an inserted SD card (`GP6`), initialize the card over `SPI0`, read and validate the packed 16-byte `"OA32"` Boot Image Header at LBA 0, load payload bytes (starting at offset `16` of LBA 0 across subsequent sectors) into User SRAM, execute `fence.i`, and transfer execution to the payload entry point.
 
-### Sub-Phase 3d: End-to-End Boot Verification & Extracted Test Disk
-* Move `bios/src/hardware_demo.S` out of `bios/` into a standalone Stage-2 bootable disk under `disks/` linking strictly against `include/abi/` and `include/ld/sd_payload.ld.S`.
-* Verify the complete boot chain (via both serial-to-RAM boot and serial-to-SD write + SD boot) running the extracted `hardware_demo` disk on top of the resident Flash BIOS.
+### Sub-Phase 3d: End-to-End Boot Verification & Stage-2 Test Disk
+* Build a standalone Stage-2 bootable test disk under `disks/` (which may mirror `hardware_demo` or be a dedicated Stage-2 verification payload) linking strictly against `include/abi/` and `include/ld/sd_payload.ld.S`.
+* Verify the complete boot chain (via `1` serial-to-RAM boot, `2` serial-to-SD write + `ENTER` SD boot, and `3` built-in hardware demo) running on top of the resident Flash BIOS.
 
 ### Phase 3 Deliverable: Oasis32 Programmer's Reference (`docs/ProgrammersReference.md`)
 Drafted and evolved alongside Sub-Phases 3a–3d so it stays in exact lockstep with `include/abi/`, this manual serves as the authoritative, self-contained specification for programming Oasis32 (in the spirit of the *Commodore 64 Programmer's Reference Guide*).

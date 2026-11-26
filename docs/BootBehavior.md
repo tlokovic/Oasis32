@@ -68,7 +68,7 @@ Our permanent, bare-metal RISC-V assembly firmware stored in QSPI Flash and exec
 2. **Resident BIOS / HAL Services:**
    * Keep low-level hardware-access routines permanently resident in XIP Flash so that SD-loaded software does not need to re-implement drivers for the display, keyboard/mouse, SD block I/O, serial port, timer, buzzer, or LEDs.
 3. **Interactive Boot Menu, SD Bootloader & Serial Loader:**
-   * Present an interactive boot menu (initially over `UART0`; later in DVI text mode) allowing the user to boot from an SD card (`ENTER`), boot a Base64-encoded disk image streamed directly into SRAM over `UART0` (`1`), or write a Base64-encoded disk image received over `UART0` to an SD card (`2`).
+   * Present an interactive boot menu (initially over `UART0`; later in DVI text mode) allowing the user to boot from an SD card (`ENTER`), boot a Base64-encoded disk image streamed directly into SRAM over `UART0` (`1`), write a Base64-encoded disk image received over `UART0` to an SD card (`2`), or run the built-in hardware demo (`3`).
    * Detect an inserted SD card (`GP6`), perform the SPI initialization handshake, read and validate the packed 16-byte `"OA32"` **Boot Image Header**, copy the **Boot Payload** into User SRAM, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
 
 ### 3.3 Stable ROM ABI (Application Binary Interface)
@@ -96,6 +96,7 @@ On power-up or reset, after completing hardware initialization (POST), the Syste
  - ENTER to boot from SD Card
  - 1 to boot from disk image read from serial
  - 2 to write disk image read from serial
+ - 3 to run a hardware demo
 ```
 
 #### Menu Options
@@ -112,6 +113,9 @@ On power-up or reset, after completing hardware initialization (POST), the Syste
   * Reads and decodes the Base64-encoded disk image from `UART0` into a **User SRAM staging buffer first**, validates the 16-byte `"OA32"` header, and only then writes the raw image (header + payload, zero-padding the tail of the final 512-byte sector) to the SD card starting at LBA 0.
   * *Why buffer in SRAM first?* `UART0` has no hardware flow control (`CTS`/`RTS`) and only a 32-byte RX FIFO, whereas an SD card flash write (`CMD24`) can stall for 10–250 ms. Buffering the complete decoded image in User SRAM before touching the SD card completely eliminates UART FIFO overrun risk for all bootable images that fit in User SRAM.
   * Once the write completes, returns to the boot menu (or equivalently resets).
+* **`3` — Run Built-In Hardware Demo:**
+  * Launches the Flash-resident hardware demo (`hardware_demo`), which exercises all hardware subsystems (serial, timer, LEDs, piezo buzzer, keyboard/mouse, SD card, and DVI video) strictly through the public BIOS `ecall` ABI (`include/abi/`).
+  * Provides rapid on-device diagnostics and regression testing of every BIOS subsystem without requiring an SD card or serial transfer—particularly useful during BIOS cleanups and refactorings. Runs until Reset.
 
 #### Validation & Error Recovery
 If any boot or transfer path encounters an error—such as an invalid `"OA32"` magic number, a `load_addr`/`entry_addr`/`payload_size` outside User SRAM, malformed Base64 input, or an SD I/O failure—the System ROM prints a descriptive error message and returns to the boot menu.
