@@ -21,11 +21,11 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * Unified Graphics and text overlay (no mode switching)
   * 640x480 1bpp monochrome memory-mapped framebuffer for bitmap graphics
   * 80x60 memory-mapped character text buffer that overlays the bitmap graphics with bitwise `OR`
-  * User-modifiable 256-glyph 8x8 memory-mapped font
+  * User-modifiable 256-glyph 8x8 memory-mapped font (IBM Code Page 437 character set)
   * Zero the text buffer for pure bitmap graphics, zero the framebuffer for pure text mode, or use both at the same time!
-  * 16 16x16 hardware sprites, assignable to 56 memory-mapped animation/tile patterns
-  * Sprites support horizontal and vertical flipping, three blending modes (opaque masked, bitwise OR, bitwise XOR), and can render above or below the text layer
-  * Sprite zero conventionally used as a floating hardware mouse cursor
+  * 16 16x16 hardware sprites, assignable to 56 memory-mapped animation/tile patterns, each with its own opacity mask
+  * Sprites support horizontal and vertical flipping, three blending modes (opaque, bitwise OR, bitwise XOR), and can render above or below the text layer
+  * Sprite zero conventionally used as a customizable hardware mouse cursor
 * **Peripheral access through stable `ecall` Syscall ABI**
   * Custom flash-resident BIOS isolates hardware details behind RISC-V `ecall` syscalls
   * **USB Keyboard & Mouse** (handled in silicon via a CH9350 HID-to-UART bridge—no software USB stack required)
