@@ -14,10 +14,14 @@
  *     line buffer to HSTX_FIFO. Increments BIOS_VSYNC_COUNT_ADDR once per
  *     frame at the start of VBLANK.
  *
- * Scope (Phase 3b — Bitmap Framebuffer + Text Overlay):
- *   - Unified OR-compositing of FRAMEBUF | FONT_RAM[TEXT_BUF] per scanline.
- *   - Hardware sprites (SPRITE_OAM / SPRITE_PAT) will plug into the same
- *     Bank 9 scanline compositing stage in the next step.
+ * Scope (Phase 3b — Full Video Coprocessor: Bitmap + Text + Sprites):
+ *   - 4-layer scanline compositing in Bank 9 ping-pong line buffers:
+ *       1. FRAMEBUF (640x480 1 bpp)
+ *       2. Behind-text sprites (BEHIND_TEXT=1, OAM Slot 31 -> Slot 0)
+ *       3. TEXT_BUF / FONT_RAM (80x60 OR-composited 8x8 CP437 glyphs)
+ *       4. In-front sprites (BEHIND_TEXT=0, OAM Slot 31 -> Slot 0)
+ *   - VBLANK frame-latching of SPRITE_OAM into BIOS_CORE1_OAM_LATCH when
+ *     VIDEO_CTRL.LATCH_OAM (bit 0) is set, or live beam-racing when clear.
  *
  * Primary References:
  *   - docs/VideoArchitecture.md §2, §4
@@ -34,11 +38,15 @@
 #include "bios_config.h"
 #include "bios_ram.h"
 
-/* Scratchpad Bank 9 HSTX DMA command list offsets (base = BIOS_CORE1_CMD_LIST) */
+/* Scratchpad Bank 9 HSTX DMA command list & sprite-list offsets
+ * (base = BIOS_CORE1_CMD_LIST = 0x200810A0, 352 bytes available) */
 #define CMD_VBLANK_OFF_OFF          0x00    /* 6 words (24 B) */
 #define CMD_VBLANK_ON_OFF           0x18    /* 6 words (24 B) */
 #define CMD_VACTIVE_PRE_OFF         0x30    /* 7 words (28 B) */
-#define CMD_LIST_TOTAL_WORDS        19      /* 76 bytes total */
+#define CMD_BEHIND_LIST_OFF         0x50    /* 33 B: enabled BEHIND_TEXT=1 slot offs + 0xFF */
+#define CMD_FRONT_LIST_OFF          0x74    /* 33 B: enabled BEHIND_TEXT=0 slot offs + 0xFF */
+#define CMD_LIST_TOTAL_WORDS        19      /* 76 bytes of Flash DMA cmd lists */
+#define SPR_LIST_END                0xFF    /* Sentinel terminating Bank 9 sprite lists */
 
 /* Handshake token sent by Core 1 -> Core 0 once HSTX + DMA are running */
 #define CORE1_VIDEO_READY_TOKEN     0x56494431  /* "VID1" */
@@ -78,16 +86,21 @@ video_init:
     addi    t0, t0, 4
     bltu    t0, t1, 1b
 
-    /* 1b. Load default CP437 8x8 Flash font into VIDEO_FONT_RAM_BASE (2,048 B)
-     *     and clear 80x60 VIDEO_TEXT_BUF_BASE (4,800 B) to transparent 0x00. */
+    /* 1b. Load default CP437 8x8 Flash font into VIDEO_FONT_RAM_BASE (2,048 B),
+     *     clear TEXT_BUF, VIDEO_CTRL, SPRITE_OAM, and SPRITE_PAT, and enable
+     *     default frame-latched OAM mode (VIDEO_CTRL.LATCH_OAM = 1). */
     call    font_load_default
 
     li      t0, VIDEO_TEXT_BUF_BASE
-    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+    li      t1, VIDEO_RAM_BASE + VIDEO_RAM_SIZE
 2:
     sw      zero, 0(t0)
     addi    t0, t0, 4
     bltu    t0, t1, 2b
+
+    li      t0, VIDEO_CTRL_BASE
+    li      t1, VIDEO_CTRL_LATCH_OAM_BIT
+    sw      t1, VIDEO_CTRL_FLAGS_OFF(t0)
 
     /* 2. Build 6-word Core 1 launch sequence in stack/rodata-free registers.
      *    We store the 6 words on Core 0's stack at 0(sp)..20(sp) — Wait:
@@ -197,8 +210,10 @@ video_wait_vsync:
  *   s5 = BIOS_CORE1_CMD_LIST    (0x200810A0: base of Bank 9 HSTX cmd lists)
  *   s6 = VIDEO_FRAMEBUF_BASE    (0x20074000)
  *   s7 = BIOS_VSYNC_COUNT_ADDR  (0x50100500)
- *   s8 = VIDEO_FONT_RAM_BASE    (0x2007D600)
- *   s9 = VIDEO_TEXT_BUF_BASE    (0x2007DE00)
+ *   s8  = VIDEO_FONT_RAM_BASE   (0x2007D600)
+ *   s9  = VIDEO_TEXT_BUF_BASE   (0x2007DE00)
+ *   s10 = active_oam_base       (BIOS_CORE1_OAM_LATCH or VIDEO_SPRITE_OAM_BASE)
+ *   s11 = VIDEO_SPRITE_PAT_BASE (0x2007F200)
  * ============================================================================ */
 .p2align 2
 .type core1_video_entry, @function
@@ -291,6 +306,18 @@ core1_video_entry:
     li      t1, 0x3
     sw      t1, DMA_INTR_OFF(s0)
 
+    /* Zero Bank 9 latched OAM mirror (256 B) and terminate sprite lists */
+    li      t0, BIOS_CORE1_OAM_LATCH
+    li      t1, BIOS_CORE1_OAM_LATCH + VIDEO_SPRITE_OAM_SIZE
+10:
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t1, 10b
+
+    li      t0, SPR_LIST_END
+    sb      t0, CMD_BEHIND_LIST_OFF(s5)
+    sb      t0, CMD_FRONT_LIST_OFF(s5)
+
     /* Initialize steady-state scanline registers */
     li      s1, 0                       /* dma_pong_next = 0 (CH0 finishes first) */
     li      s2, 2                       /* v_scanline = 2 (lines 0 & 1 pre-loaded) */
@@ -300,6 +327,8 @@ core1_video_entry:
     li      s7, BIOS_VSYNC_COUNT_ADDR
     li      s8, VIDEO_FONT_RAM_BASE
     li      s9, VIDEO_TEXT_BUF_BASE
+    li      s10, BIOS_CORE1_OAM_LATCH
+    li      s11, VIDEO_SPRITE_PAT_BASE
 
     /* Start Channel 0 (PING) via MULTI_CHAN_TRIGGER */
     li      t1, 0x1
@@ -359,32 +388,89 @@ wait_dma_ch:
     sw      t3, DMA_CH0_COUNT_OFF(t0)
     li      s3, 1                       /* vactive_cmdlist_posted = 1 */
 
-    /* Compose active scanline y = (v_scanline - 45) into Bank 9 buffer s4:
-     *   out_byte = FRAMEBUF[y * 80 + col] | FONT_RAM[TEXT_BUF[(y>>3)*80 + col] * 8 + (y & 7)]
-     * Future: blend behind-text and in-front hardware sprites in this stage. */
-    addi    t2, s2, -CFG_MODE_V_BLANK_END   /* t2 = active_y (0..479) */
+    /* Compose active scanline y = (v_scanline - 45) into Bank 9 buffer s4
+     * in 4 deterministic layers (docs/VideoArchitecture.md §5.3):
+     *   1. FRAMEBUF (20 words = 80 bytes)
+     *   2. Behind-text sprites (BEHIND_TEXT = 1, Slot 31 -> Slot 0)
+     *   3. TEXT_BUF / FONT_RAM (OR-composited across 80 columns)
+     *   4. In-front sprites (BEHIND_TEXT = 0, Slot 31 -> Slot 0) */
+    addi    a5, s2, -CFG_MODE_V_BLANK_END   /* a5 = active_y (0..479) */
     li      t3, VIDEO_STRIDE_BYTES          /* 80 bytes/row */
-    mul     a0, t2, t3
+
+    /* Layer 1: Copy 20 words from FRAMEBUF[y * 80] -> Bank 9 buffer s4 */
+    mul     a0, a5, t3
     add     a0, s6, a0                      /* a0 = &FRAMEBUF[y * 80] */
-    srli    t4, t2, 3                       /* text_row = y >> 3 (0..59) */
+    mv      a3, s4                          /* a3 = dst Bank 9 buffer */
+    addi    a4, s4, VIDEO_STRIDE_BYTES      /* a4 = dst end (+80) */
+compose_fb_loop:
+    lw      t4, 0(a0)
+    sw      t4, 0(a3)
+    addi    a0, a0, 4
+    addi    a3, a3, 4
+    bltu    a3, a4, compose_fb_loop
+
+    /* Layer 2: Behind-text sprites (BEHIND_TEXT = 1, Slot 31 -> Slot 0) */
+    mv      a0, a5                          /* y */
+    mv      a1, s4                          /* line_buf */
+    mv      a2, s10                         /* active_oam_base */
+    addi    a3, s5, CMD_BEHIND_LIST_OFF     /* Bank 9 enabled behind-text list */
+    call    core1_draw_sprite_list
+
+    /* Layer 3: TEXT_BUF / FONT_RAM 4-column word-wise OR-compositing onto s4 */
+    li      t3, VIDEO_STRIDE_BYTES
+    srli    t4, a5, 3                       /* text_row = y >> 3 (0..59) */
     mul     a1, t4, t3
     add     a1, s9, a1                      /* a1 = &TEXT_BUF[text_row * 80] */
-    andi    t4, t2, 7                       /* glyph_row = y & 7 (0..7) */
+    andi    t4, a5, 7                       /* glyph_row = y & 7 (0..7) */
     add     a2, s8, t4                      /* a2 = &FONT_RAM[0 + (y & 7)] */
-    mv      a3, s4                          /* a3 = dst Bank 9 ping-pong buffer */
+    mv      a3, s4                          /* a3 = dst Bank 9 buffer */
     addi    a4, s4, VIDEO_STRIDE_BYTES      /* a4 = dst end (+80) */
-compose_col_loop:
-    lbu     t3, 0(a1)                       /* glyph_idx = TEXT_BUF[col] */
-    slli    t3, t3, 3                       /* glyph_idx * 8 */
-    add     t3, t3, a2                      /* &FONT_RAM[glyph_idx * 8 + (y & 7)] */
-    lbu     t3, 0(t3)                       /* glyph_byte */
-    lbu     t4, 0(a0)                       /* fb_byte = FRAMEBUF[col] */
-    or      t4, t4, t3                      /* unified OR-compositing */
-    sb      t4, 0(a3)
-    addi    a0, a0, 1
-    addi    a1, a1, 1
-    addi    a3, a3, 1
-    bltu    a3, a4, compose_col_loop
+compose_text_word_loop:
+    lw      t3, 0(a1)                       /* 4 TEXT_BUF cells [c3|c2|c1|c0] */
+    beqz    t3, compose_text_next4          /* Fast skip: 4 transparent cells */
+
+    andi    t4, t3, 0xFF
+    slli    t4, t4, 3
+    add     t4, t4, a2
+    lbu     t0, 0(t4)                       /* g0 */
+
+    srli    t4, t3, 8
+    andi    t4, t4, 0xFF
+    slli    t4, t4, 3
+    add     t4, t4, a2
+    lbu     t4, 0(t4)                       /* g1 */
+    slli    t4, t4, 8
+    or      t0, t0, t4
+
+    srli    t4, t3, 16
+    andi    t4, t4, 0xFF
+    slli    t4, t4, 3
+    add     t4, t4, a2
+    lbu     t4, 0(t4)                       /* g2 */
+    slli    t4, t4, 16
+    or      t0, t0, t4
+
+    srli    t4, t3, 24
+    slli    t4, t4, 3
+    add     t4, t4, a2
+    lbu     t4, 0(t4)                       /* g3 */
+    slli    t4, t4, 24
+    or      t0, t0, t4
+
+    lw      t4, 0(a3)
+    or      t4, t4, t0
+    sw      t4, 0(a3)
+compose_text_next4:
+    addi    a1, a1, 4
+    addi    a3, a3, 4
+    bltu    a3, a4, compose_text_word_loop
+
+    /* Layer 4: In-front sprites (BEHIND_TEXT = 0, Slot 31 -> Slot 0) */
+    mv      a0, a5                          /* y */
+    mv      a1, s4                          /* line_buf */
+    mv      a2, s10                         /* active_oam_base */
+    addi    a3, s5, CMD_FRONT_LIST_OFF      /* Bank 9 enabled in-front list */
+    call    core1_draw_sprite_list
     j       core1_scanline_loop
 
     /* --- Phase B (posted == 1): Queue already-composed Bank 9 buffer (20 w) --- */
@@ -398,7 +484,7 @@ line_vactive_pixels:
     li      t2, (BIOS_CORE1_LINE_A ^ BIOS_CORE1_LINE_B)
     xor     s4, s4, t2
 
-    /* Advance scanline; on wrap 525 -> 0, increment monotonic VSYNC counter */
+    /* Advance scanline; wrap 525 -> 0 (VSYNC count & OAM latch run in VBLANK!) */
     addi    s2, s2, 1
     li      t2, CFG_MODE_V_TOTAL
     bltu    s2, t2, core1_scanline_loop
@@ -422,8 +508,291 @@ line_vblank_off:
     sw      t2, DMA_CH0_READ_OFF(t0)
     sw      t3, DMA_CH0_COUNT_OFF(t0)
     addi    s2, s2, 1
+
+    /* On scanline 0 -> 1 (full 4,000-cycle VBLANK window), latch SPRITE_OAM
+     * and rebuild the compact Bank 9 behind-text & in-front enabled lists. */
+    li      t2, 1
+    bne     s2, t2, core1_scanline_loop
+    call    core1_vblank_latch_oam
     j       core1_scanline_loop
 .size core1_video_entry, . - core1_video_entry
+
+/* ----------------------------------------------------------------------------
+ * core1_vblank_latch_oam:
+ *   Runs once per frame on VBLANK line 0 (4,000 idle cycles available).
+ *   If VIDEO_CTRL.LATCH_OAM == 1, copies SPRITE_OAM (256 B) into Bank 9
+ *   (BIOS_CORE1_OAM_LATCH), sets s10 = BIOS_CORE1_OAM_LATCH, and builds the
+ *   compact enabled-slot lists at CMD_BEHIND_LIST_OFF and CMD_FRONT_LIST_OFF
+ *   (in Slot 31 -> Slot 0 order). If LATCH_OAM == 0 (live beam-racing), sets
+ *   s10 = VIDEO_SPRITE_OAM_BASE and populates both lists with all 32 slots.
+ * ---------------------------------------------------------------------------- */
+.p2align 2
+.type core1_vblank_latch_oam, @function
+core1_vblank_latch_oam:
+    li      t0, VIDEO_CTRL_BASE
+    lw      t1, VIDEO_CTRL_FLAGS_OFF(t0)
+    andi    t1, t1, VIDEO_CTRL_LATCH_OAM_BIT
+    beqz    t1, latch_live_mode
+
+    /* Frame-latched mode: copy 64 words SPRITE_OAM -> Bank 9 mirror */
+    li      t0, VIDEO_SPRITE_OAM_BASE
+    li      t1, BIOS_CORE1_OAM_LATCH
+    li      t2, BIOS_CORE1_OAM_LATCH + VIDEO_SPRITE_OAM_SIZE
+1:
+    lw      t3, 0(t0)
+    sw      t3, 0(t1)
+    addi    t0, t0, 4
+    addi    t1, t1, 4
+    bltu    t1, t2, 1b
+    li      s10, BIOS_CORE1_OAM_LATCH
+
+    /* Partition enabled slots (31 -> 0) into behind_list & front_list */
+    addi    t0, s5, CMD_BEHIND_LIST_OFF     /* behind write ptr */
+    addi    t1, s5, CMD_FRONT_LIST_OFF      /* front write ptr */
+    li      t2, (SPRITE_OAM_COUNT - 1) * SPRITE_OAM_STRIDE  /* 248 down to 0 */
+2:
+    add     t3, s10, t2
+    lbu     t4, SPRITE_OAM_OFF_FLAGS(t3)
+    andi    t5, t4, SPRITE_FLAG_ENABLE
+    beqz    t5, 4f
+    andi    t5, t4, SPRITE_FLAG_BEHIND_TEXT
+    beqz    t5, 3f
+    sb      t2, 0(t0)
+    addi    t0, t0, 1
+    j       4f
+3:
+    sb      t2, 0(t1)
+    addi    t1, t1, 1
+4:
+    addi    t2, t2, -SPRITE_OAM_STRIDE
+    bgez    t2, 2b
+
+    li      t3, SPR_LIST_END
+    sb      t3, 0(t0)
+    sb      t3, 0(t1)
+    ret
+
+latch_live_mode:
+    /* Dynamic / beam-racing mode: read live SPRITE_OAM, scan all 32 slots */
+    li      s10, VIDEO_SPRITE_OAM_BASE
+    addi    t0, s5, CMD_BEHIND_LIST_OFF
+    addi    t1, s5, CMD_FRONT_LIST_OFF
+    li      t2, (SPRITE_OAM_COUNT - 1) * SPRITE_OAM_STRIDE
+5:
+    sb      t2, 0(t0)
+    sb      t2, 0(t1)
+    addi    t0, t0, 1
+    addi    t1, t1, 1
+    addi    t2, t2, -SPRITE_OAM_STRIDE
+    bgez    t2, 5b
+    li      t3, SPR_LIST_END
+    sb      t3, 0(t0)
+    sb      t3, 0(t1)
+    ret
+.size core1_vblank_latch_oam, . - core1_vblank_latch_oam
+
+/* ----------------------------------------------------------------------------
+ * core1_draw_sprite_list(a0=y, a1=line_buf, a2=oam_base, a3=list_ptr):
+ *   Walks the 0xFF-terminated Bank 9 slot-offset list (Slot 31 -> Slot 0).
+ *   For each sprite covering scanline `y`, fetches its 16-bit pixel & mask
+ *   row from VIDEO_SPRITE_PAT_BASE (in s11), applies VFLIP/HFLIP, clips
+ *   horizontally to [0..639], and blends (OPAQUE / OR / XOR) into `line_buf`.
+ *   Preserves s0-s11 and a5 (active_y).
+ * ---------------------------------------------------------------------------- */
+.p2align 2
+.type core1_draw_sprite_list, @function
+core1_draw_sprite_list:
+    /* Fast exit if this layer has zero enabled sprites! */
+    lbu     t0, 0(a3)
+    li      t1, SPR_LIST_END
+    beq     t0, t1, spr_fast_ret
+
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      a5, 8(sp)
+
+    li      a6, SPRITE_HEIGHT               /* 16 */
+    li      a7, SPRITE_PAT_COUNT            /* 56 */
+    /* Determine expected BEHIND_TEXT bit from list_ptr (behind vs front) */
+    addi    t2, s5, CMD_BEHIND_LIST_OFF
+    li      t1, 0
+    bne     a3, t2, spr_list_loop
+    li      t1, SPRITE_FLAG_BEHIND_TEXT
+    /* Keep expected (ENABLE | want_behind) in 4(sp) for live-mode filtering */
+spr_list_loop:
+    ori     t2, t1, SPRITE_FLAG_ENABLE
+    sw      t2, 4(sp)
+
+spr_slot_loop:
+    lbu     t2, 0(a3)                       /* slot byte offset (0..248) or 0xFF */
+    li      t3, SPR_LIST_END
+    beq     t2, t3, spr_list_done
+    add     a4, a2, t2                      /* a4 = &oam_base[slot] */
+
+    lbu     t0, SPRITE_OAM_OFF_FLAGS(a4)    /* t0 = flags */
+    andi    t1, t0, (SPRITE_FLAG_ENABLE | SPRITE_FLAG_BEHIND_TEXT)
+    lw      t2, 4(sp)
+    bne     t1, t2, spr_next_slot
+
+    /* Vertical hit-test: (uint32_t)(y - sy) < 16 */
+    lh      t1, SPRITE_OAM_OFF_Y(a4)        /* t1 = signed sy */
+    sub     t1, a0, t1                      /* t1 = row = y - sy */
+    bgeu    t1, a6, spr_next_slot
+
+    /* Horizontal visibility check: -15 <= sx <= 639 */
+    lh      t2, SPRITE_OAM_OFF_X(a4)        /* t2 = signed sx */
+    li      t3, -15
+    blt     t2, t3, spr_next_slot
+    li      t3, VIDEO_WIDTH
+    bge     t2, t3, spr_next_slot
+
+    /* Pattern index bounds check (0..55) */
+    lbu     t3, SPRITE_OAM_OFF_PAT(a4)
+    bgeu    t3, a7, spr_next_slot
+
+    /* Apply VFLIP (row = 15 - row) */
+    andi    t4, t0, SPRITE_FLAG_VFLIP
+    beqz    t4, 1f
+    xori    t1, t1, 15
+1:
+    /* Fetch 16-bit pixel & mask rows from SPRITE_PAT[pat * 64 + row * 2] */
+    slli    t3, t3, 6                       /* pat * 64 */
+    slli    t1, t1, 1                       /* row * 2 */
+    add     t3, t3, t1
+    add     t3, s11, t3                     /* &SPRITE_PAT[pat][row] */
+    lhu     t4, SPRITE_PAT_PIXEL_OFF(t3)    /* t4 = pix16 */
+    lhu     t5, SPRITE_PAT_MASK_OFF(t3)     /* t5 = msk16 */
+
+    /* Apply HFLIP (simultaneous 32-bit SWAR reversal of pix16 | (msk16 << 16)) */
+    andi    t1, t0, SPRITE_FLAG_HFLIP
+    beqz    t1, spr_clip_x
+    slli    t5, t5, 16
+    or      t6, t4, t5
+    call    core1_rev16_pair_t6
+    slli    t4, t6, 16
+    srli    t4, t4, 16                      /* t4 = reversed pix16 */
+    srli    t5, t6, 16                      /* t5 = reversed msk16 */
+
+spr_clip_x:
+    /* Left-edge clipping: if sx < 0, shift out (-sx) left pixels and clamp sx=0 */
+    bgez    t2, 2f
+    neg     t1, t2
+    srl     t4, t4, t1
+    srl     t5, t5, t1
+    li      t2, 0
+2:
+    /* Word-wise Bank 9 blending (1 aligned 32-bit word if bit_shift <= 16,
+     * else 2 adjacent aligned 32-bit words). line_buf (a1) is 4-byte aligned. */
+    srli    t1, t2, 5                       /* t1 = word_idx (0..19) */
+    andi    t2, t2, 31                      /* t2 = bit_shift (0..31) */
+    slli    t3, t1, 2
+    add     t3, a1, t3                      /* t3 = &line_buf[word_idx * 4] */
+
+    /* Extract blend mode: 0=OPAQUE, 1=OR, 2=XOR, 3=reserved */
+    srli    t0, t0, SPRITE_BLEND_SHIFT
+    andi    t0, t0, 3
+    li      a5, 3
+    beq     t0, a5, spr_next_slot
+
+    /* First word (word_idx, always in bounds 0..19): shift left by bit_shift.
+     * Preserve t4 (pix16) and t5 (msk16) for optional second word; use a4/a5/t6. */
+    sll     t6, t4, t2                      /* pix_lo */
+    lw      a5, 0(t3)                       /* bg_lo */
+    beqz    t0, spr_lo_opaque
+    li      a4, 1
+    beq     t0, a4, spr_lo_or
+    xor     a5, a5, t6                      /* XOR */
+    j       spr_lo_store
+spr_lo_or:
+    or      a5, a5, t6                      /* OR */
+    j       spr_lo_store
+spr_lo_opaque:
+    sll     a4, t5, t2                      /* msk_lo */
+    not     a4, a4
+    and     a5, a5, a4
+    or      a5, a5, t6
+spr_lo_store:
+    sw      a5, 0(t3)
+
+    /* Second word needed only if bit_shift > 16 AND word_idx + 1 < 20 */
+    li      a5, 16
+    ble     t2, a5, spr_next_slot
+    li      a5, (VIDEO_STRIDE_WORDS - 1)    /* 19 */
+    bgeu    t1, a5, spr_next_slot
+
+    li      a4, 32
+    sub     t2, a4, t2                      /* rshift = 32 - bit_shift (1..15) */
+    srl     t6, t4, t2                      /* pix_hi */
+    lw      a5, 4(t3)                       /* bg_hi */
+    beqz    t0, spr_hi_opaque
+    li      a4, 1
+    beq     t0, a4, spr_hi_or
+    xor     a5, a5, t6                      /* XOR */
+    j       spr_hi_store
+spr_hi_or:
+    or      a5, a5, t6                      /* OR */
+    j       spr_hi_store
+spr_hi_opaque:
+    srl     a4, t5, t2                      /* msk_hi */
+    not     a4, a4
+    and     a5, a5, a4
+    or      a5, a5, t6
+spr_hi_store:
+    sw      a5, 4(t3)
+
+spr_next_slot:
+    addi    a3, a3, 1
+    j       spr_slot_loop
+
+spr_list_done:
+    lw      a5, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+spr_fast_ret:
+    ret
+.size core1_draw_sprite_list, . - core1_draw_sprite_list
+
+/* ----------------------------------------------------------------------------
+ * core1_rev16_pair_t6:
+ *   Simultaneously reverses bits [15:0] and bits [31:16] of t6 in-place
+ *   (used to HFLIP both pix16 and msk16 in a single 32-bit SWAR pass).
+ *   Clobbers t1 and a5 only.
+ * ---------------------------------------------------------------------------- */
+.type core1_rev16_pair_t6, @function
+core1_rev16_pair_t6:
+    /* Swap odd/even bits */
+    li      t1, 0x55555555
+    and     a5, t6, t1
+    slli    a5, a5, 1
+    srli    t6, t6, 1
+    and     t6, t6, t1
+    or      t6, t6, a5
+
+    /* Swap 2-bit pairs */
+    li      t1, 0x33333333
+    and     a5, t6, t1
+    slli    a5, a5, 2
+    srli    t6, t6, 2
+    and     t6, t6, t1
+    or      t6, t6, a5
+
+    /* Swap nibbles */
+    li      t1, 0x0F0F0F0F
+    and     a5, t6, t1
+    slli    a5, a5, 4
+    srli    t6, t6, 4
+    and     t6, t6, t1
+    or      t6, t6, a5
+
+    /* Swap bytes within each 16-bit halfword */
+    li      t1, 0x00FF00FF
+    and     a5, t6, t1
+    slli    a5, a5, 8
+    srli    t6, t6, 8
+    and     t6, t6, t1
+    or      t6, t6, a5
+    ret
+.size core1_rev16_pair_t6, . - core1_rev16_pair_t6
 
 /* Core 1 fault safety trap (Direct-mode mtvec target) */
 .p2align 2

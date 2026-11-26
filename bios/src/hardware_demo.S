@@ -15,6 +15,10 @@
  *     bouncing 32x32 XOR box (~60 px/s) scanned out by Core 1
  *   - DVI Text Overlay (VIDEO_TEXT_BUF_BASE): bouncing "Oasis32" string at
  *     character granularity starting from top-right, OR-composited by Core 1
+ *   - Hardware Sprites (SPRITE_OAM / SPRITE_PAT): all 32 16x16 'R' sprites
+ *     covering all 24 (in-front/behind-text) x (OPAQUE/OR/XOR) x (4 flips)
+ *     combinations + 8 repeats, starting at y=232 and bouncing in [4..460] at
+ *     1x/2x/4x speeds so all 32 periodically reconverge on one scanline!
  * ============================================================================
  */
 
@@ -41,12 +45,49 @@
 #define DEMO_TEXT_MIN_ROW           1
 #define DEMO_TEXT_MAX_ROW           (VIDEO_TEXT_ROWS - 2)
 
-/* Local stack-frame slots for bouncing text state (16-byte-aligned 80 B frame) */
+#define DEMO_SPR_COUNT              16                  /* Test 16 simultaneous sprites */
+#define DEMO_SPR_START_Y            232                 /* Exact center */
+#define DEMO_SPR_MIN_Y              4                   /* 232 - 228 (div by 4) */
+#define DEMO_SPR_MAX_Y              460                 /* 232 + 228 (div by 4) */
+
+/* Local stack-frame slots for text & 32-sprite state (16-byte-aligned 112 B) */
 #define STK_TEXT_NEXT_US            0
 #define STK_TEXT_COL                4
 #define STK_TEXT_ROW                8
 #define STK_TEXT_DCOL               12
 #define STK_TEXT_DROW               16
+#define STK_SPR_DY                  20      /* 32 signed int8_t vertical velocities */
+
+/* Assemble-time 16-pixel ASCII-art sprite row encoders (char 0 -> bit 0 LSB):
+ *   '#' = opaque white (pixel=1, mask=1)
+ *   'o' = opaque black (pixel=0, mask=1)
+ *   '.' = transparent  (pixel=0, mask=0) */
+.macro spr_pix_row str
+    .set _s_val, 0
+    .set _s_bit, 1
+    .irpc _c, "\str"
+        .ifc "\_c", "#"
+            .set _s_val, _s_val | _s_bit
+        .endif
+        .set _s_bit, _s_bit << 1
+    .endr
+    .hword _s_val
+.endm
+
+.macro spr_msk_row str
+    .set _s_val, 0
+    .set _s_bit, 1
+    .irpc _c, "\str"
+        .ifc "\_c", "#"
+            .set _s_val, _s_val | _s_bit
+        .endif
+        .ifc "\_c", "o"
+            .set _s_val, _s_val | _s_bit
+        .endif
+        .set _s_bit, _s_bit << 1
+    .endr
+    .hword _s_val
+.endm
 
 .section .text, "ax"
 
@@ -58,29 +99,29 @@
  *   s3  = next_piezo_us  (next 3 s beep start deadline)
  *   s4  = piezo_stop_us  (100 ms stop deadline while active)
  *   s5  = piezo_active   (0=silent, 1=beeping)
- *   s6  = next_video_us  (16,667 us bouncing box step deadline)
+ *   s6  = next_video_us  (16,667 us bouncing box & sprite step deadline)
  *   s7  = box_x          (1..607)
  *   s8  = box_y          (1..447)
  *   s9  = box_dx         (+1 or -1)
  *   s10 = box_dy         (+1 or -1)
- *   sp+0..16 = bouncing text state (next_us, col, row, dcol, drow)
+ *   sp+0..29 = bouncing text & 6-sprite demo state
  * ---------------------------------------------------------------------------- */
 .global hardware_demo
 .type hardware_demo, @function
 hardware_demo:
-    addi    sp, sp, -80
-    sw      ra, 76(sp)
-    sw      s0, 72(sp)
-    sw      s1, 68(sp)
-    sw      s2, 64(sp)
-    sw      s3, 60(sp)
-    sw      s4, 56(sp)
-    sw      s5, 52(sp)
-    sw      s6, 48(sp)
-    sw      s7, 44(sp)
-    sw      s8, 40(sp)
-    sw      s9, 36(sp)
-    sw      s10, 32(sp)
+    addi    sp, sp, -112
+    sw      ra, 108(sp)
+    sw      s0, 104(sp)
+    sw      s1, 100(sp)
+    sw      s2, 96(sp)
+    sw      s3, 92(sp)
+    sw      s4, 88(sp)
+    sw      s5, 84(sp)
+    sw      s6, 80(sp)
+    sw      s7, 76(sp)
+    sw      s8, 72(sp)
+    sw      s9, 68(sp)
+    sw      s10, 64(sp)
 
     la      a0, str_splash
     call    demo_puts
@@ -129,6 +170,10 @@ hardware_demo:
     mv      a1, t1
     la      a2, str_bounce_text
     call    demo_text_write
+
+    /* Initialize 16x16 'R' pattern (pat 0) and all 32 harmonic test sprites */
+    addi    a0, sp, STK_SPR_DY
+    call    demo_sprites_init
 
     /* Snapshot initial timestamp */
     li      a7, BIOS_TIME_US
@@ -271,10 +316,13 @@ check_video:
 4:
     add     s8, s8, s10
 
-    /* Draw new box and advance deadline */
+    /* Draw new box, step the 6 bouncing sprites, and advance deadline */
     mv      a0, s7
     mv      a1, s8
     call    demo_fb_xor_box
+
+    addi    a0, sp, STK_SPR_DY
+    call    demo_sprites_step
 
     li      t0, DEMO_VIDEO_STEP_US
     add     s6, s6, t0
@@ -380,6 +428,118 @@ demo_text_clear:
 2:
     ret
 .size demo_text_clear, . - demo_text_clear
+
+/* ----------------------------------------------------------------------------
+ * demo_sprites_init(a0 = int8_t dy[32] buffer):
+ *   Copies the 64-byte 16x16 'R' pattern into VIDEO_SPRITE_PAT_BASE (pat 0),
+ *   and initializes all 32 OAM slots evenly across x = 2 + i*20 at y = 232
+ *   covering all 24 (behind/front) x (OPAQUE/OR/XOR) x (4 flip) combinations
+ *   plus 8 repeats, with harmonic vertical speeds (1x, 2x, 4x, alternating +/-).
+ * ---------------------------------------------------------------------------- */
+.type demo_sprites_init, @function
+demo_sprites_init:
+    /* 1. Copy 64-byte 'R' pattern (16 words) -> VIDEO_SPRITE_PAT_BASE */
+    la      t0, demo_spr_pat_r
+    li      t1, VIDEO_SPRITE_PAT_BASE
+    li      t2, VIDEO_SPRITE_PAT_BASE + SPRITE_PAT_STRIDE
+1:
+    lw      t3, 0(t0)
+    sw      t3, 0(t1)
+    addi    t0, t0, 4
+    addi    t1, t1, 4
+    bltu    t1, t2, 1b
+
+    /* 2. Populate DEMO_SPR_COUNT OAM slots evenly spaced across 640 px */
+    li      t0, VIDEO_SPRITE_OAM_BASE
+    li      t1, 0                       /* i = 0..DEMO_SPR_COUNT-1 */
+    li      t2, 12                      /* x = 12, 52, 92, ..., 612 */
+    li      t6, 0                       /* speed_idx = 0 (1x), 1 (2x), 2 (4x) */
+2:
+    /* Store x (t2) and starting center y = 232 */
+    sh      t2, SPRITE_OAM_OFF_X(t0)
+    li      t3, DEMO_SPR_START_Y
+    sh      t3, SPRITE_OAM_OFF_Y(t0)
+    sb      zero, SPRITE_OAM_OFF_PAT(t0)
+
+    /* combo = (i < 24) ? i : (i - 24) */
+    mv      t3, t1
+    li      t4, 24
+    bltu    t3, t4, 3f
+    addi    t3, t3, -24
+3:
+    /* flags = ENABLE | (behind << 3) | (blend << 4) | (flip << 1) */
+    li      t5, SPRITE_FLAG_ENABLE
+    li      t4, 12
+    bltu    t3, t4, 4f
+    addi    t3, t3, -12
+    ori     t5, t5, SPRITE_FLAG_BEHIND_TEXT
+4:
+    srli    t4, t3, 2                   /* blend = 0, 1, or 2 */
+    slli    t4, t4, SPRITE_BLEND_SHIFT
+    or      t5, t5, t4
+    andi    t4, t3, 3                   /* flip = 0..3 -> bits [2:1] */
+    slli    t4, t4, 1
+    or      t5, t5, t4
+    sb      t5, SPRITE_OAM_OFF_FLAGS(t0)
+    sh      zero, 6(t0)                 /* reserved = 0 */
+
+    /* Harmonic velocity: 1 << speed_idx -> {1, 2, 4}, negated on odd i */
+    li      t3, 1
+    sll     t3, t3, t6
+    andi    t4, t1, 1
+    beqz    t4, 5f
+    neg     t3, t3
+5:
+    sb      t3, 0(a0)
+
+    /* Advance speed_idx = (speed_idx + 1) % 3 */
+    addi    t6, t6, 1
+    li      t4, 3
+    bltu    t6, t4, 6f
+    li      t6, 0
+6:
+    addi    t0, t0, SPRITE_OAM_STRIDE
+    addi    a0, a0, 1
+    addi    t2, t2, 40
+    addi    t1, t1, 1
+    li      t4, DEMO_SPR_COUNT
+    bltu    t1, t4, 2b
+    ret
+.size demo_sprites_init, . - demo_sprites_init
+
+/* ----------------------------------------------------------------------------
+ * demo_sprites_step(a0 = int8_t dy[32]):
+ *   Steps all 32 OAM slots vertically at 1x/2x/4x speeds within [4..460].
+ *   Because 228 is divisible by 1, 2, and 4, all 32 reconverge at y = 232
+ *   every 456 frames (~7.6 s), exercising the full 32-sprite scanline peak.
+ * ---------------------------------------------------------------------------- */
+.type demo_sprites_step, @function
+demo_sprites_step:
+    li      t0, VIDEO_SPRITE_OAM_BASE
+    li      t1, DEMO_SPR_COUNT
+    li      t5, DEMO_SPR_MIN_Y
+    li      t6, DEMO_SPR_MAX_Y
+1:
+    lh      t2, SPRITE_OAM_OFF_Y(t0)    /* current y */
+    lb      t3, 0(a0)                   /* signed dy (+/-1, +/-2, +/-4) */
+    add     t2, t2, t3
+    bgt     t2, t5, 2f
+    mv      t2, t5
+    neg     t3, t3
+    j       3f
+2:
+    blt     t2, t6, 3f
+    mv      t2, t6
+    neg     t3, t3
+3:
+    sh      t2, SPRITE_OAM_OFF_Y(t0)
+    sb      t3, 0(a0)
+    addi    t0, t0, SPRITE_OAM_STRIDE
+    addi    a0, a0, 1
+    addi    t1, t1, -1
+    bnez    t1, 1b
+    ret
+.size demo_sprites_step, . - demo_sprites_step
 
 /* ----------------------------------------------------------------------------
  * demo_fb_draw_grid_and_border:
@@ -604,9 +764,39 @@ demo_print_u8_bin:
  * ============================================================================ */
 .section .rodata, "a"
 str_splash:
-    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI + Text)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI 640x480 + 80x60 Text; type to echo:\r\n"
+    .asciz "\r\n========================================\r\n  Oasis32 System ROM (BIOS) v0.1\r\n  Hardware Demo (UART0 + TIMER0 + LEDs + Piezo + DVI/Text/32 Sprites)\r\n========================================\r\nReady. LEDs 1/s, Piezo 1kHz/3s, DVI + Text + 32 Sprites; type to echo:\r\n"
 str_bounce_text:
     .asciz "Oasis32"
+
+/* Single source of truth for the 16x16 asymmetric capital 'R' sprite:
+ *   '#' = white outline (pixel=1, mask=1)
+ *   'o' = opaque black interior (pixel=0, mask=1)
+ *   '.' = transparent exterior & counter (pixel=0, mask=0) */
+.macro demo_r_sprite_rows row_macro
+    \row_macro ".############..."
+    \row_macro ".#oooooooooo##.."
+    \row_macro ".#ooooooooooo##."
+    \row_macro ".#ooo#####oooo#."
+    \row_macro ".#ooo#...#oooo#."
+    \row_macro ".#ooo#...#oooo#."
+    \row_macro ".#ooo#####oooo#."
+    \row_macro ".#ooooooooooo##."
+    \row_macro ".#oooooooooo##.."
+    \row_macro ".#ooo####ooo#..."
+    \row_macro ".#ooo#..##ooo#.."
+    \row_macro ".#ooo#...##ooo#."
+    \row_macro ".#ooo#....##ooo#"
+    \row_macro ".#ooo#.....##oo#"
+    \row_macro ".#ooo#......##o#"
+    \row_macro ".#####.......###"
+.endm
+
+.p2align 2
+demo_spr_pat_r:
+    /* Bytes 0..31: Pixel Plane (16 x uint16_t) */
+    demo_r_sprite_rows spr_pix_row
+    /* Bytes 32..63: Mask Plane (16 x uint16_t) */
+    demo_r_sprite_rows spr_msk_row
 str_rx_prefix:
     .asciz "Serial character received: dec="
 str_hex_sep:
