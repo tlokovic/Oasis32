@@ -67,6 +67,13 @@
 #define HID_OFF_MPOS_TAIL           0x1F    /* uint8_t (0..15) */
 #define HID_OFF_MBTN_HEAD           0x20    /* uint8_t (0..15) */
 #define HID_OFF_MBTN_TAIL           0x21    /* uint8_t (0..15) */
+#define HID_OFF_RPT_KEY             0x22    /* uint8_t active repeating keycode (0=none) */
+#define HID_OFF_RPT_DELAY_MS        0x24    /* uint16_t initial repeat delay (ms) */
+#define HID_OFF_RPT_RATE_MS         0x26    /* uint16_t repeat interval (ms) */
+
+#define KBD_REPEAT_DEFAULT_DELAY_MS 500
+#define KBD_REPEAT_DEFAULT_RATE_MS  50
+#define KBD_REPEAT_MAX_MS           65535
 
 /* Ring buffers inside BIOS_HID_STATE_BASE (0x040..0x1BF = 448 B total) */
 #define HID_OFF_KBD_RING            0x040   /* 32 x 4 B = 128 B */
@@ -88,13 +95,18 @@
 .global input_init
 .type input_init, @function
 input_init:
-    /* 1. Initialize default screen-space mouse cursor to center (320, 240).
+    /* 1. Initialize default screen-space mouse cursor to center (320, 240) and
+     *    default keyboard typematic repeat (500 ms delay, 50 ms rate).
      *    (All other bytes in BIOS_HID_STATE_BASE are already zeroed by boot.S.) */
     li      t0, BIOS_HID_STATE_BASE
     li      t1, MOUSE_INIT_X
     sh      t1, HID_OFF_MOUSE_X(t0)
     li      t1, MOUSE_INIT_Y
     sh      t1, HID_OFF_MOUSE_Y(t0)
+    li      t1, KBD_REPEAT_DEFAULT_DELAY_MS
+    sh      t1, HID_OFF_RPT_DELAY_MS(t0)
+    li      t1, KBD_REPEAT_DEFAULT_RATE_MS
+    sh      t1, HID_OFF_RPT_RATE_MS(t0)
 
     /* 2. Configure PL011 UART1 for 115200 8N1 with 32-byte FIFOs */
     li      t0, UART1_BASE
@@ -135,7 +147,17 @@ input_init:
     li      t1, (PADS_IE_BIT | PADS_PUE_BIT)
     sw      t1, PADS_UART1_RX_OFF(t0)
 
-    /* 4. Enable IRQ 34 (UART1_IRQ) in Hazard3 h3.meiea and mie.MEIE */
+    /* 4. Enable TIMER0 Alarm 0 IRQ (IRQ 0) for typematic key repeat */
+    li      t0, TIMER0_BASE
+    li      t1, TIMER_ALARM0_BIT
+    sw      t1, TIMER_ARMED_OFF(t0)         /* Ensure Alarm 0 starts disarmed */
+    sw      t1, TIMER_INTR_OFF(t0)          /* Clear any stale raw IRQ */
+    li      t0, TIMER0_BASE + ATOMIC_SET
+    sw      t1, TIMER_INTE_OFF(t0)          /* Enable TIMER0_IRQ_0 */
+
+    /* 5. Enable IRQ 0 (TIMER0_IRQ_0) & IRQ 34 (UART1_IRQ) in h3.meiea and mie.MEIE */
+    li      t0, H3_IRQ_TIMER0_0_MEIEA
+    csrs    CSR_MEIEA, t0
     li      t0, H3_IRQ_UART1_MEIEA
     csrs    CSR_MEIEA, t0
     li      t0, MIE_MEIE_BIT
@@ -380,6 +402,15 @@ kbd_rel_inner:
     j       kbd_rel_inner
 
 kbd_rel_emit:
+    /* If the released key is the active repeating key, cancel repeat & disarm Alarm 0 */
+    lbu     t0, HID_OFF_RPT_KEY(s1)
+    bne     t1, t0, 1f
+    sb      zero, HID_OFF_RPT_KEY(s1)
+    li      t0, TIMER0_BASE
+    li      t2, TIMER_ALARM0_BIT
+    sw      t2, TIMER_ARMED_OFF(t0)
+    sw      t2, TIMER_INTR_OFF(t0)
+1:
     slli    t2, s3, KEY_EVENT_MOD_SHIFT
     or      a0, t1, t2                      /* DOWN = 0 */
     call    hid_push_kbd_event
@@ -408,6 +439,21 @@ kbd_prs_inner:
     j       kbd_prs_inner
 
 kbd_prs_emit:
+    /* Last-pressed non-modifier key owns typematic repeat; arm Alarm 0 for delay_ms */
+    sb      t1, HID_OFF_RPT_KEY(s1)
+    lhu     t0, HID_OFF_RPT_DELAY_MS(s1)
+    beqz    t0, 2f
+    lhu     t2, HID_OFF_RPT_RATE_MS(s1)
+    beqz    t2, 2f
+    li      t2, 1000
+    mul     t0, t0, t2                      /* delay_us = delay_ms * 1000 */
+    li      t2, TIMER0_BASE
+    li      t3, TIMER_ALARM0_BIT
+    sw      t3, TIMER_INTR_OFF(t2)          /* Clear any stale pending flag */
+    lw      t3, TIMER_RAWL_OFF(t2)
+    add     t3, t3, t0
+    sw      t3, TIMER_ALARM0_OFF(t2)        /* Arm Alarm 0 */
+2:
     slli    t2, s3, KEY_EVENT_MOD_SHIFT
     or      a0, t1, t2
     li      t2, KEY_EVENT_DOWN_BIT
@@ -600,6 +646,8 @@ input_kbd_read:
 
 /* ----------------------------------------------------------------------------
  * input_kbd_flush() -> a0 = ERR_OK (0)
+ *   Clears queued keyboard events and cancels any active typematic repeat so
+ *   a held key does not immediately inject a stale repeat into a fresh prompt.
  * ---------------------------------------------------------------------------- */
 .global input_kbd_flush
 .type input_kbd_flush, @function
@@ -608,6 +656,11 @@ input_kbd_flush:
     li      t0, BIOS_HID_STATE_BASE
     lbu     t1, HID_OFF_KBD_HEAD(t0)
     sb      t1, HID_OFF_KBD_TAIL(t0)
+    sb      zero, HID_OFF_RPT_KEY(t0)
+    li      t0, TIMER0_BASE
+    li      t1, TIMER_ALARM0_BIT
+    sw      t1, TIMER_ARMED_OFF(t0)
+    sw      t1, TIMER_INTR_OFF(t0)
     andi    t6, t6, MSTATUS_MIE_BIT
     csrs    mstatus, t6
     li      a0, ERR_OK
@@ -869,6 +922,106 @@ kbd_to_ascii_none:
     li      a0, 0
     ret
 .size input_kbd_keycode_to_ascii, . - input_kbd_keycode_to_ascii
+
+/* ----------------------------------------------------------------------------
+ * input_timer0_irq_handler(): Called from trap_meip_entry (IRQ 0, MIE=0,
+ *   Bank 8 IRQ stack). Emits a synthetic repeat event for HID_OFF_RPT_KEY
+ *   with KEY_EVENT_DOWN_BIT | KEY_EVENT_REPEAT_BIT and re-arms Alarm 0 for
+ *   HID_OFF_RPT_RATE_MS milliseconds.
+ * ---------------------------------------------------------------------------- */
+.global input_timer0_irq_handler
+.type input_timer0_irq_handler, @function
+input_timer0_irq_handler:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s0, 8(sp)
+    sw      s1, 4(sp)
+
+    /* Clear latched Alarm 0 IRQ + APB write-flush read (§2.1.2, p. 28) */
+    li      s0, TIMER0_BASE
+    li      t0, TIMER_ALARM0_BIT
+    sw      t0, TIMER_INTR_OFF(s0)
+    lw      zero, TIMER_INTR_OFF(s0)
+
+    li      s1, BIOS_HID_STATE_BASE
+    lbu     t0, HID_OFF_RPT_KEY(s1)
+    beqz    t0, timer0_irq_done
+    lhu     t1, HID_OFF_RPT_DELAY_MS(s1)
+    beqz    t1, timer0_irq_done
+    lhu     t1, HID_OFF_RPT_RATE_MS(s1)
+    beqz    t1, timer0_irq_done
+
+    /* Enqueue (KEY_EVENT_REPEAT_BIT | KEY_EVENT_DOWN_BIT | mods<<8 | key) */
+    lbu     t2, HID_OFF_KBD_MODS(s1)
+    slli    t2, t2, KEY_EVENT_MOD_SHIFT
+    or      a0, t0, t2
+    li      t2, (KEY_EVENT_DOWN_BIT | KEY_EVENT_REPEAT_BIT)
+    or      a0, a0, t2
+    call    hid_push_kbd_event
+
+    /* Re-arm TIMER0 Alarm 0 for rate_ms * 1000 us */
+    lhu     t1, HID_OFF_RPT_RATE_MS(s1)
+    li      t2, 1000
+    mul     t1, t1, t2
+    lw      t2, TIMER_RAWL_OFF(s0)
+    add     t2, t2, t1
+    sw      t2, TIMER_ALARM0_OFF(s0)
+
+timer0_irq_done:
+    lw      s1, 4(sp)
+    lw      s0, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+.size input_timer0_irq_handler, . - input_timer0_irq_handler
+
+/* ----------------------------------------------------------------------------
+ * input_kbd_set_repeat(a0 = delay_ms, a1 = rate_ms)
+ *   -> a0 = ERR_OK (0) or ERR_INVALID_ARG (-2)
+ *   Valid range: 0..65535 ms. Either 0 disables typematic repeat immediately.
+ * ---------------------------------------------------------------------------- */
+.global input_kbd_set_repeat
+.type input_kbd_set_repeat, @function
+input_kbd_set_repeat:
+    li      t0, KBD_REPEAT_MAX_MS
+    bgtu    a0, t0, 2f
+    bgtu    a1, t0, 2f
+
+    csrrci  t6, mstatus, MSTATUS_MIE_BIT
+    li      t0, BIOS_HID_STATE_BASE
+    sh      a0, HID_OFF_RPT_DELAY_MS(t0)
+    sh      a1, HID_OFF_RPT_RATE_MS(t0)
+
+    /* If disabled (either 0), cancel any active repeat & disarm Alarm 0 */
+    beqz    a0, 1f
+    bnez    a1, 3f
+1:
+    sb      zero, HID_OFF_RPT_KEY(t0)
+    li      t0, TIMER0_BASE
+    li      t1, TIMER_ALARM0_BIT
+    sw      t1, TIMER_ARMED_OFF(t0)
+    sw      t1, TIMER_INTR_OFF(t0)
+3:
+    andi    t6, t6, MSTATUS_MIE_BIT
+    csrs    mstatus, t6
+    li      a0, ERR_OK
+    ret
+2:
+    li      a0, ERR_INVALID_ARG
+    ret
+.size input_kbd_set_repeat, . - input_kbd_set_repeat
+
+/* ----------------------------------------------------------------------------
+ * input_kbd_get_repeat() -> a0 = delay_ms (0..65535), a1 = rate_ms (0..65535)
+ * ---------------------------------------------------------------------------- */
+.global input_kbd_get_repeat
+.type input_kbd_get_repeat, @function
+input_kbd_get_repeat:
+    li      t0, BIOS_HID_STATE_BASE
+    lhu     a0, HID_OFF_RPT_DELAY_MS(t0)
+    lhu     a1, HID_OFF_RPT_RATE_MS(t0)
+    ret
+.size input_kbd_get_repeat, . - input_kbd_get_repeat
 
 /* ============================================================================
  * Read-Only Keycode-to-ASCII Lookup Tables (.rodata in XIP Flash)

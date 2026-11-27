@@ -200,12 +200,17 @@
 #define PWM_CH3_TOP_OFF             0x04C
 
 /* ----------------------------------------------------------------------------
- * TIMER0 Registers (§12.8.5, p. 1099)
+ * TIMER0 Registers (§12.8.5, Table 1338, pp. 1099-1101)
  * ---------------------------------------------------------------------------- */
 #define TIMER_TIMEHR_OFF            0x008
 #define TIMER_TIMELR_OFF            0x00C
-#define TIMER_RAWL_OFF              0x028
+#define TIMER_ALARM0_OFF            0x010
+#define TIMER_ARMED_OFF             0x020
 #define TIMER_RAWH_OFF              0x024
+#define TIMER_RAWL_OFF              0x028
+#define TIMER_INTR_OFF              0x03C
+#define TIMER_INTE_OFF              0x040
+#define TIMER_ALARM0_BIT            (1 << 0)
 
 /* ----------------------------------------------------------------------------
  * HSTX & DMA & BUSCTRL (§12.11.7, §12.6.10, §12.15.4.3)
@@ -263,9 +268,11 @@
 #define MSTATUS_MIE_BIT             (1 << 3)
 #define MCAUSE_ECALL_M              11
 
-/* RP2350 System IRQ Numbers (rp2350-datasheet.pdf §3.2, Table 103) */
+/* RP2350 System IRQ Numbers (rp2350-datasheet.pdf §3.2, Table 95, pp. 81-82) */
+#define IRQ_TIMER0_0                0
 #define IRQ_UART1                   34
-/* Hazard3 h3.meiea window = 34 >> 4 = 2, bit = 16 + (34 & 15) = 18 */
+/* Hazard3 h3.meiea window = irq >> 4, bit = 16 + (irq & 15) */
+#define H3_IRQ_TIMER0_0_MEIEA       ((1 << (16 + (IRQ_TIMER0_0 & 15))) | (IRQ_TIMER0_0 >> 4))
 #define H3_IRQ_UART1_MEIEA          ((1 << (16 + (IRQ_UART1 & 15))) | (IRQ_UART1 >> 4))
 
 #endif /* OASIS32_BIOS_HW_RP2350_REGS_H */

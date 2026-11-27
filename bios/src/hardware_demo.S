@@ -1184,6 +1184,12 @@ demo_log_kbd_event:
 
     la      a0, str_kbd_prefix
     call    demo_puts
+    li      t0, KEY_EVENT_REPEAT_BIT
+    and     t0, s0, t0
+    beqz    t0, 3f
+    la      a0, str_ev_rp
+    j       2f
+3:
     li      t0, KEY_EVENT_DOWN_BIT
     and     t0, s0, t0
     beqz    t0, 1f
@@ -1520,6 +1526,8 @@ str_ev_dn:
     .asciz "DN"
 str_ev_up:
     .asciz "UP"
+str_ev_rp:
+    .asciz "RP"
 str_kbd_code:
     .asciz " code=0x"
 str_kbd_mod:

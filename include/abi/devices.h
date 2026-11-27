@@ -103,6 +103,7 @@
 #define KEY_EVENT_MOD_SHIFT         8
 #define KEY_EVENT_MOD_MASK          0xFF00
 #define KEY_EVENT_DOWN_BIT          (1 << 16)
+#define KEY_EVENT_REPEAT_BIT        (1 << 17)
 #define KEY_STATE_MAX_KEYS          6
 #define KEY_STATE_BUF_SIZE          8
 

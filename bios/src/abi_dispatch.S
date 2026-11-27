@@ -119,6 +119,10 @@ trap_sync_entry:
     beq     a7, t0, svc_kbd_state
     li      t0, BIOS_KEYBOARD_KEYCODE_TO_ASCII
     beq     a7, t0, svc_kbd_keycode_to_ascii
+    li      t0, BIOS_KEYBOARD_SET_REPEAT
+    beq     a7, t0, svc_kbd_set_repeat
+    li      t0, BIOS_KEYBOARD_GET_REPEAT
+    beq     a7, t0, svc_kbd_get_repeat
     li      t0, BIOS_MOUSE_POS_READ
     beq     a7, t0, svc_mouse_pos_read
     li      t0, BIOS_MOUSE_POS_TRY_READ
@@ -232,6 +236,14 @@ svc_kbd_state:
 
 svc_kbd_keycode_to_ascii:
     call    input_kbd_keycode_to_ascii
+    j       ecall_return
+
+svc_kbd_set_repeat:
+    call    input_kbd_set_repeat
+    j       ecall_return
+
+svc_kbd_get_repeat:
+    call    input_kbd_get_repeat
     j       ecall_return
 
 svc_mouse_pos_read:
@@ -444,8 +456,17 @@ meip_dispatch_loop:
     csrr    t0, CSR_MEINEXT             /* (irq_num << 2), or bit 31 = 1 if none */
     bltz    t0, meip_done
     li      t1, (IRQ_UART1 << 2)
-    bne     t0, t1, meip_done
+    beq     t0, t1, meip_uart1
+    li      t1, (IRQ_TIMER0_0 << 2)
+    beq     t0, t1, meip_timer0
+    j       meip_done
+
+meip_uart1:
     call    input_uart1_irq_handler
+    j       meip_dispatch_loop
+
+meip_timer0:
+    call    input_timer0_irq_handler
     j       meip_dispatch_loop
 
 meip_done:

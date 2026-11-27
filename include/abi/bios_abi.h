@@ -100,6 +100,11 @@
  *                                           -> a0 = printable ASCII (0x20..0x7E) or 0
  *     Translates an Oasis32 keycode (`include/abi/keycodes.h`) and modifier mask
  *     to its printable ASCII character, or 0 if the keycode is non-printable.
+ *   BIOS_KEYBOARD_SET_REPEAT   (a0=delay_ms, a1=rate_ms)
+ *                                           -> a0 = ERR_OK (0) or ERR_INVALID_ARG (-2)
+ *     Sets typematic repeat delay & interval (0..65535 ms; 0 disables repeat).
+ *     Boot default: delay=500 ms, rate=50 ms. Repeat events set KEY_EVENT_REPEAT_BIT.
+ *   BIOS_KEYBOARD_GET_REPEAT   ()           -> a0 = delay_ms, a1 = rate_ms
  *
  * Mouse (screen-space 0..639 x 0..479, boot default 320x240):
  *   BIOS_MOUSE_POS_READ        ()           -> a0 = 0, a1 = x, a2 = y,
@@ -117,6 +122,8 @@
 #define BIOS_KEYBOARD_FLUSH             0x32
 #define BIOS_KEYBOARD_STATE             0x33
 #define BIOS_KEYBOARD_KEYCODE_TO_ASCII  0x34
+#define BIOS_KEYBOARD_SET_REPEAT        0x35
+#define BIOS_KEYBOARD_GET_REPEAT        0x36
 
 #define BIOS_MOUSE_POS_READ         0x38
 #define BIOS_MOUSE_POS_TRY_READ     0x39
