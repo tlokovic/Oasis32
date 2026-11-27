@@ -45,7 +45,7 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
     * Write the received disk image to an SD card for future use
   
 ## Documentation
-*  For a comprehensive programmer's reference, see [Programmer's Reference](docs/ProgrammersReference.md). FOr 
+*  For a comprehensive programmer's reference, see [Programmer's Reference](docs/ProgrammersReference.md).
 *  For hardware details, see [Hardware](docs/Hardware.md).
 *  For boot behavior, see [Booting Behavior](docs/BootBehavior.md).
 *  For execution, interrupt, and `ecall` ABI design, see [Execution Model](docs/ExecutionModel.md).
