@@ -67,7 +67,7 @@ The RP2350 decodes top-level bus destinations on `addr[31:28]` across its AHB5 c
 | `VIDEO_FRAMEBUF_BASE` | `0x2007_4000` | `0x2007_D5FF` | `38,400` | `0x0000_9600` | 4 KB | `640×480` 1 bpp monochrome framebuffer (`80` bytes/scanline). |
 | `VIDEO_FONT_RAM_BASE` | `0x2007_D600` | `0x2007_DDFF` | `2,048` | `0x0000_0800` | 512 B | `256` glyphs × `8` bytes, glyph-major (`FONT_RAM[ch * 8 + row]`), glyph `0x00` empty. |
 | `VIDEO_TEXT_BUF_BASE` | `0x2007_DE00` | `0x2007_F0BF` | `4,800` | `0x0000_12C0` | 512 B | `80×60` character overlay grid (`row * 80 + col`), OR-composited onto `FRAMEBUF`. |
-| `VIDEO_CTRL_BASE` | `0x2007_F0C0` | `0x2007_F0FF` | `64` | `0x0000_0040` | 64 B | Public video control/status block (`LATCH_OAM`, future scroll/cursor fields). |
+| `VIDEO_CTRL_BASE` | `0x2007_F0C0` | `0x2007_F0FF` | `64` | `0x0000_0040` | 64 B | Public video control/status block (`LATCH_OAM`, future display flags). |
 | `VIDEO_SPRITE_OAM_BASE` | `0x2007_F100` | `0x2007_F17F` | `128` | `0x0000_0080` | 256 B | `16` simultaneous on-screen sprite slots (`8` B each; Sprite 0 conventionally mouse cursor). |
 | `VIDEO_SPRITE_PAT_BASE` | `0x2007_F180` | `0x2007_FFFF` | `3,712` | `0x0000_0E80` | 128 B | `58` masked `16×16` 2-plane sprite patterns (`64` B each: 32 B pixels + 32 B mask). |
 
@@ -89,7 +89,7 @@ Because Oasis32 uses the CH9350 ASIC for keyboard/mouse and CP2102N for serial, 
 | SD Sector Staging Buffer | `0x5010_0000`–`0x5010_01FF` | 512 B | Single-sector buffer for reading LBA 0 (`"OA32"` header + first 496 payload bytes) and BIOS SD helpers. |
 | CH9350 HID State (`UART1`) | `0x5010_0200`–`0x5010_03FF` | 512 B | 11-byte State-2 packet assembler, active 8-byte keyboard report, key-event ring buffer, and accumulated mouse deltas (`dX`, `dY`, `wheel`, buttons). |
 | Debug Serial State (`UART0`) | `0x5010_0400`–`0x5010_04FF` | 256 B | Optional interrupt-driven RX ring buffer & state (backing the PL011's 32-byte hardware FIFOs). |
-| Video Control / Sync Block | `0x5010_0500`–`0x5010_053F` | 64 B | Shared Core 1 → Core 0 status (`vsync_count`, plus room for future cursor/scroll/OAM flags). |
+| Video Control / Sync Block | `0x5010_0500`–`0x5010_053F` | 64 B | Shared Core 0 ↔ Core 1 state (`vsync_count`, plus BIOS-private text cursor position, visibility, and blink-frame period managed via `BIOS_TEXT_*` syscalls). |
 | Misc Driver State | `0x5010_0540`–`0x5010_05FF` | 192 B | SD `CCS`/capacity flags, LED shadow bits, piezo state, boot flags, BIOS runtime scratch. |
 | BIOS Growth Headroom | `0x5010_0600`–`0x5010_0FFF` | 2,560 B | Unallocated private reserve (2.5 KB) for future BIOS features without touching Main SRAM. |
 

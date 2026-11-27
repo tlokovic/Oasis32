@@ -131,7 +131,8 @@ Within the BIOS range (`0x0000`–`0x00FF`), service IDs are grouped into **16-I
 | `0x50`–`0x5F` | **Timer (`TIME_*`)** | Monotonic 64-bit microsecond clock. |
 | `0x60`–`0x6F` | **Audio (`AUDIO_*`)** | Piezo buzzer tone frequency / silence control. |
 | `0x70`–`0x7F` | **LEDs (`LED_*`)** | 3-bit status LED control. |
-| `0x80`–`0xFF` | **Reserved** | Future BIOS expansion. |
+| `0x80`–`0x8F` | **Text Console (`TEXT_*`)** | 80×60 cursor positioning, `PUTC`/`PUTS` (Unix `\n`, wrap, auto-scroll), scroll up/down, and blinking hardware cursor control. |
+| `0x90`–`0xFF` | **Reserved** | Future BIOS expansion. |
 
 * **Registration via BIOS:** A Stage-2 OS registers (or clears, with `0`) its dispatcher via a dedicated BIOS call (`SYS_SET_OS_ECALL_HANDLER(fn_ptr)`). When an application executes `ecall` with `a7 >= 0x0100`:
   * If `os_ecall_handler == 0`, the BIOS returns `ERR_UNSUPPORTED`.

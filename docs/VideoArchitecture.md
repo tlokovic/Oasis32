@@ -19,7 +19,7 @@ The BIOS exposes one contiguous **48 KB** public video memory block at the top o
 | **`FRAMEBUF`** | `0x2007_4000`–`0x2007_D5FF` | `640×480` @ 1 bpp | 38,400 B | Monochrome pixel framebuffer (`80` bytes per scanline × `480` scanlines). |
 | **`FONT_RAM`** | `0x2007_D600`–`0x2007_DDFF` | `256` glyphs × `8` B | 2,048 B | Programmable `8×8` character set in **glyph-major layout** (`FONT_RAM[char * 8 + row]`, row `0` = top, row `7` = bottom). |
 | **`TEXT_BUF`** | `0x2007_DE00`–`0x2007_F0BF` | `80×60` cells | 4,800 B | Character grid: 1 byte per `8×8`-pixel cell (`row * 80 + col`), indexing glyphs `0x00`–`0xFF` in `FONT_RAM`. |
-| **`VIDEO_CTRL`** | `0x2007_F0C0`–`0x2007_F0FF` | Control/status block | 64 B | Public video control registers (e.g., `LATCH_OAM` mode bit, future scroll/cursor flags). |
+| **`VIDEO_CTRL`** | `0x2007_F0C0`–`0x2007_F0FF` | Control/status block | 64 B | Public video control registers (e.g., `LATCH_OAM` mode bit, future display flags). |
 | **`SPRITE_OAM`** | `0x2007_F100`–`0x2007_F17F` | `16` slots × `8` B | 128 B | Active on-screen sprite descriptor table (Sprite 0 conventionally used as the mouse cursor). |
 | **`SPRITE_PAT`** | `0x2007_F180`–`0x2007_FFFF` | `58` patterns × `64` B | 3,712 B | Masked `16×16` 2-plane sprite pattern bank (supports multiple animation frames and shared patterns). |
 
@@ -43,6 +43,7 @@ This single rule naturally covers every display use case without any mode-switch
 * **Pure Graphics Mode:** Zero-fill `TEXT_BUF`. Because glyph `0x00` is empty (`0x00`), `FRAMEBUF | 0x00 == FRAMEBUF`.
 * **Pure 80×60 Text Mode:** Zero-fill `FRAMEBUF`. Only glyphs from `TEXT_BUF` appear (`0x00 | glyph_byte == glyph_byte`).
 * **Non-Destructive Text Overlay:** Write graphics to `FRAMEBUF` and HUD/console text to `TEXT_BUF` independently. Erasing or scrolling text never clobbers the underlying graphics pixels.
+* **Non-Destructive Hardware Text Cursor:** Cursor position (`col` `0..79`, `row` `0..59`), visibility, and blink half-period (in 60 Hz frames; `0` = solid) live in BIOS-private USB DPRAM and are updated strictly via the `BIOS_BLK_TEXT` (`0x80`–`0x8F`) `ecall` services (never directly memory-mapped). When enabled, Core 1 drives the blink phase from its 60 Hz VBLANK counter and inverts (`^ 0xFF`) the active 8×8 glyph cell during Layer 3 scanline compositing—incurring zero Core 0 overhead and never mutating `TEXT_BUF` or `FONT_RAM`.
 
 ---
 
