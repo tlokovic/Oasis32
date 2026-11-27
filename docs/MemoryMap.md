@@ -89,7 +89,7 @@ Because Oasis32 uses the CH9350 ASIC for keyboard/mouse and CP2102N for serial, 
 | SD Sector Staging Buffer | `0x5010_0000`–`0x5010_01FF` | 512 B | Single-sector buffer for reading LBA 0 (`"OA32"` header + first 496 payload bytes) and BIOS SD helpers. |
 | CH9350 HID State (`UART1`) | `0x5010_0200`–`0x5010_03FF` | 512 B | 11-byte State-2 packet assembler, active 8-byte keyboard report, key-event ring buffer, and accumulated mouse deltas (`dX`, `dY`, `wheel`, buttons). |
 | Debug Serial State (`UART0`) | `0x5010_0400`–`0x5010_04FF` | 256 B | Optional interrupt-driven RX ring buffer & state (backing the PL011's 32-byte hardware FIFOs). |
-| Video Control / Sync Block | `0x5010_0500`–`0x5010_053F` | 64 B | Shared Core 0 ↔ Core 1 state (`vsync_count`, plus BIOS-private text cursor position, visibility, and blink-frame period managed via `BIOS_TEXT_*` syscalls). |
+| Video Control / Sync Block | `0x5010_0500`–`0x5010_053F` | 64 B | Shared Core 0 ↔ Core 1 state: `0x5010_0500` = `vsync_count` (`uint32_t`); `0x5010_0504` planned for packed 32-bit text cursor state (`[blink_frames:8 \| visible:8 \| row:8 \| col:8]`) for single-word atomic `sw`/`lw` between Core 0 `BIOS_TEXT_*` syscalls and Core 1 VBLANK latch. |
 | Misc Driver State | `0x5010_0540`–`0x5010_05FF` | 192 B | SD `CCS`/capacity flags, LED shadow bits, piezo state, boot flags, BIOS runtime scratch. |
 | BIOS Growth Headroom | `0x5010_0600`–`0x5010_0FFF` | 2,560 B | Unallocated private reserve (2.5 KB) for future BIOS features without touching Main SRAM. |
 
