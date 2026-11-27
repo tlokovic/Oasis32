@@ -288,9 +288,9 @@ Rather than hardcoding SRAM or Video RAM addresses in assembly and linker script
 
 #### The Standard Linker Script (`include/ld/sd_payload.ld.S`)
 
-Oasis32 provides a shared linker script template, `include/ld/sd_payload.ld.S`, that imports `abi/memory_map.h` and `abi/boot_header.h` to link standalone programs directly at `USER_RAM_BASE` (`0x2000_0000`) while automatically synthesizing the 16-byte `"OA32"` Boot Image Header (§3.1):
+Oasis32 provides a shared linker script template, `include/ld/sd_payload.ld.S`, that imports `abi/memory_map.h` and `abi/boot_header.h` to link standalone programs directly at `USER_RAM_BASE` (`0x2000_0000`) while automatically synthesizing the 32-byte `"OA32"` Boot Image Header (§3.1):
 
-* **Zero-Boilerplate Boot Header:** The script places a `.boot_header` section immediately below User SRAM (`USER_RAM_BASE - 16` = `0x1FFF_FFF0`), populated with `BOOT_HEADER_MAGIC`, `__payload_start`, `_start`, and `__payload_size`. When the linked ELF is flattened with `objcopy -Obinary` (§7.2), the 16-byte header lands at file offset `0` and the payload follows immediately at offset `16` with zero padding, while every runtime symbol in the payload resolves 1:1 to its actual User SRAM address (`0x2000_0000+`).
+* **Zero-Boilerplate Boot Header:** The script places a `.boot_header` section immediately below User SRAM (`USER_RAM_BASE - 32` = `0x1FFF_FFE0`), populated with `BOOT_HEADER_MAGIC`, `__payload_start`, `_start`, `__payload_size`, a `0` placeholder for `crc32`, and 12 reserved zero bytes. When the linked ELF is flattened with `objcopy -Obinary` and post-processed (§7.2), the 32-byte header (with its patched IEEE CRC-32) lands at file offset `0` and the payload follows immediately at offset `32` (`0x20`) with zero padding, while every runtime symbol in the payload resolves 1:1 to its actual User SRAM address (`0x2000_0000+`).
 * **Entry-Point Placement (`.text.entry` & `_start`):** The script declares `ENTRY(_start)` and wraps `*(.text.entry)` in `KEEP(...)` at the very start of `.text`. Place your startup routine in `.section .text.entry, "ax"` with a `.global _start` label so the linker emits it at `USER_RAM_BASE`, writes its address into the header's `entry_addr` field, and preserves it under link-time garbage collection.
 * **Non-Loaded `.bss`:** The `.bss` section (including `.sbss` and `COMMON`) is marked `NOLOAD`, so uninitialized globals consume zero bytes in the `.oa32` disk image. Because the bootloader only copies `[__payload_start, __payload_end)`, `_start` is responsible for zeroing `[__bss_start, __bss_end)` before using `.bss` variables (§3.3).
 
@@ -315,9 +315,9 @@ Programs with specialized layouts are free to use a custom linker script instead
 
 ### 3.1 Bootable Disk Image Format (`"OA32"`)
 
-Oasis32 uses a single, uniform binary **Bootable Disk Image Format** (conventionally `.oa32`) for both raw SD boot disks (starting at **LBA 0**) and Base64-encoded serial transfers (§3.2). Non-bootable disks and executables loaded by an operating system are not required to use this format.
+Oasis32 uses a single, uniform raw binary **Bootable Disk Image Format** (conventionally `.oa32`) for both raw SD boot disks (starting at **LBA 0**) and raw binary serial transfers (§3.2). Non-bootable disks and executables loaded by an operating system are not required to use this format.
 
-An `"OA32"` image consists of a **packed 16-byte little-endian Boot Image Header** followed immediately by `payload_size` raw payload bytes starting at byte offset `0x10` (`16`). All header constants are defined in `include/abi/boot_header.h`.
+An `"OA32"` image consists of a **packed 32-byte little-endian Boot Image Header** followed immediately by `payload_size` raw payload bytes starting at byte offset `0x20` (`32`). All header constants are defined in `include/abi/boot_header.h`.
 
 #### Binary Layout
 
@@ -326,44 +326,47 @@ An `"OA32"` image consists of a **packed 16-byte little-endian Boot Image Header
 | `0x00` | `BOOT_HEADER_OFF_MAGIC` | 4 B | `uint32_t` | `magic` | Magic identifier `BOOT_HEADER_MAGIC` = `0x3233_414F` (ASCII `"OA32"`, byte order `0x4F, 0x41, 0x33, 0x32`). |
 | `0x04` | `BOOT_HEADER_OFF_LOAD_ADDR` | 4 B | `uint32_t` | `load_addr` | Destination address in User SRAM where payload byte `0` is copied. |
 | `0x08` | `BOOT_HEADER_OFF_ENTRY_ADDR` | 4 B | `uint32_t` | `entry_addr` | Target address in User SRAM jumped to after loading completes. |
-| `0x0C` | `BOOT_HEADER_OFF_PAYLOAD_SZ` | 4 B | `uint32_t` | `payload_size` | Payload length in bytes (total image length minus `BOOT_HEADER_SIZE` = `16`). |
-| `0x10` | `BOOT_HEADER_OFF_PAYLOAD` | `payload_size` B | `uint8_t[]` | `payload` | Raw payload bytes copied verbatim to `[load_addr, load_addr + payload_size)`. |
+| `0x0C` | `BOOT_HEADER_OFF_PAYLOAD_SZ` | 4 B | `uint32_t` | `payload_size` | Payload length in bytes (total image length minus `BOOT_HEADER_SIZE` = `32`). |
+| `0x10` | `BOOT_HEADER_OFF_CRC32` | 4 B | `uint32_t` | `crc32` | Standard IEEE 802.3 CRC-32 (polynomial `0xEDB8_8320`, init `0xFFFF_FFFF`, final XOR `0xFFFF_FFFF`) computed over the `payload_size` raw payload bytes. |
+| `0x14` | `BOOT_HEADER_OFF_RESERVED` | 12 B | `uint8_t[12]` | `reserved` | Reserved for future header extensions; must be zero (`0x00`) in ABI `0.1.0`. |
+| `0x20` | `BOOT_HEADER_OFF_PAYLOAD` | `payload_size` B | `uint8_t[]` | `payload` | Raw payload bytes copied verbatim to `[load_addr, load_addr + payload_size)`. |
 
 #### SD Card Sector Mapping
 
 When stored on an SD card (512-byte sectors), the image starts at **LBA 0** with no partition table or filesystem wrapper required:
 
 ```text
-LBA 0 (512 B):  [ 16-byte "OA32" Header (0x00..0x0F) ][ Payload bytes 0..495 (up to 496 B) ]
-LBA 1 (512 B):  [ Payload bytes 496..1007                                                   ]
+LBA 0 (512 B):  [ 32-byte "OA32" Header (0x00..0x1F) ][ Payload bytes 0..479 (up to 480 B) ]
+LBA 1 (512 B):  [ Payload bytes 480..991                                                   ]
   ...
-LBA N (512 B):  [ Remaining payload bytes ... ][ Zero-padded tail (ignored by bootloader)   ]
-LBA N+1 .. end: [ Untouched by BIOS — free for program/OS data or filesystem                ]
+LBA N (512 B):  [ Remaining payload bytes ... ][ Zero-padded tail (ignored by bootloader)  ]
+LBA N+1 .. end: [ Untouched by BIOS — free for program/OS data or filesystem               ]
 ```
 
-* **LBA 0 Split:** The first up to `496` payload bytes (`BOOT_HEADER_LBA0_PAYLOAD_MAX = 512 - 16`) share LBA 0 with the header; remaining bytes continue contiguously across LBA 1..N.
-* **Sector Count & Padding:** A boot image spans `ceil((16 + payload_size) / 512)` = `(16 + payload_size + 511) / 512` sectors. Trailing bytes in the final sector are zero-padded when written by the BIOS serial writer (§3.2) and ignored when booting.
+* **LBA 0 Split:** The first up to `480` payload bytes (`BOOT_HEADER_LBA0_PAYLOAD_MAX = 512 - 32`) share LBA 0 with the header; remaining bytes continue contiguously across LBA 1..N.
+* **Sector Count & Padding:** A boot image spans `ceil((32 + payload_size) / 512)` = `(32 + payload_size + 511) / 512` sectors. Trailing bytes in the final sector are zero-padded when written by the BIOS serial writer (§3.2) and ignored when booting.
 * **Remaining Disk Space:** Sectors after LBA N are never read or modified by the bootloader and are completely available to the booted program or OS.
 
-#### Header Validation Rules
+#### Header & Integrity Validation Rules
 
-Before copying any payload bytes or transferring control, the bootloader validates every field of the `"OA32"` header and rejects the image (returning to the boot menu with an error message) if any check fails:
+Before transferring control (or writing to SD in Option `2`), the bootloader validates every field of the `"OA32"` header and verifies the payload checksum, rejecting the image (returning to the boot menu with an error message) if any check fails:
 
 1. **Magic Match:** `magic == BOOT_HEADER_MAGIC` (`0x3233_414F`).
 2. **Non-Empty Payload:** `payload_size > 0`.
 3. **Load Range Within User SRAM (No Wrap-Around):** `load_addr >= USER_RAM_BASE`, `load_addr < USER_STACK_TOP`, and `payload_size <= USER_STACK_TOP - load_addr` — guaranteeing `[load_addr, load_addr + payload_size) ⊆ [USER_RAM_BASE, USER_STACK_TOP)` without 32-bit unsigned overflow.
 4. **Valid Entry Point:** `entry_addr >= USER_RAM_BASE`, `entry_addr < USER_STACK_TOP`, and `(entry_addr & 1) == 0` (2-byte aligned per §2.2).
-5. **Media Bounds (SD Boot / Write):** For SD operations, the required sector count `(16 + payload_size + 511) / 512` must not exceed the card's reported capacity.
+5. **Media Bounds (SD Boot / Write):** For SD operations, the required sector count `(32 + payload_size + 511) / 512` must not exceed the card's reported capacity.
+6. **Payload Checksum Match:** The IEEE 802.3 CRC-32 computed over the loaded `payload_size` payload bytes must equal the header's `crc32` field.
 
 *(Note: `.bss` is not represented in the `"OA32"` header; see §2.4 and §3.3.)*
 
 ### 3.2 Bootloader Interface & Startup Menu (User Guide)
-*TODO: Provide complete user documentation for operating the interactive startup bootloader over the serial console (connecting a host terminal at 115,200 baud, 8N1, no flow control). Document the power-up splash screen, exact menu layout, and step-by-step usage for all four options: `ENTER` (boot from SD card), `1` (boot a Base64-encoded `.oa32` disk image directly into User SRAM without touching the SD card), `2` (receive a Base64-encoded `.oa32` image into User SRAM, validate it, and write it raw to an SD card starting at LBA 0), and `3` (run the built-in hardware diagnostic demo). Document interactive prompts (`"Insert boot disk"` / `"Insert disk to write"`), Base64 framing rules (whitespace ignored, stops automatically after `16 + payload_size` decoded bytes), error messages, and recovery back to the boot menu. (Note: verify final exact prompt wording once Sub-Phase 3c is implemented.)*
+*TODO: Provide complete user documentation for operating the interactive startup bootloader over the serial console (connecting a host terminal at 115,200 baud, 8N1, no flow control). Document the power-up splash screen, exact menu layout, and step-by-step usage for all four options: `ENTER` (boot from SD card), `1` (boot a raw binary `.oa32` disk image directly into User SRAM without touching the SD card), `2` (receive a raw binary `.oa32` image into User SRAM, validate header and CRC-32, and write it raw to an SD card starting at LBA 0), and `3` (run the built-in hardware diagnostic demo). Document interactive prompts (`"Insert boot disk"` / `"Insert disk to write"`), raw binary framing rules (stops automatically after `32 + payload_size` bytes; `ESC`/`Ctrl-C` cancels before byte 0 `'O'` arrives; idle timeout aborts stalled transfers), error messages, and recovery back to the boot menu. (Note: verify final exact prompt wording once Sub-Phase 3c is implemented.)*
 
 ### 3.3 Guaranteed Machine State at Entry (`_start`)
 *TODO: Specify every guaranteed register, memory, and peripheral invariant when the BIOS bootloader transfers control to `entry_addr` (after executing `fence.i`):*
 - *CPU & Stack: `sp = USER_STACK_TOP` (`0x2007_4000`, 16-byte aligned); all other GPRs unspecified.*
-- *Memory & `.bss`: `[load_addr, load_addr + payload_size)` holds the verified payload bytes; **the program's `_start` is responsible for zeroing `[__bss_start, __bss_end)`** (since `.bss` is not encoded in the 16-byte `"OA32"` header). Unloaded regions of User SRAM are unspecified.*
+- *Memory & `.bss`: `[load_addr, load_addr + payload_size)` holds the verified payload bytes; **the program's `_start` is responsible for zeroing `[__bss_start, __bss_end)`** (since `.bss` is not encoded in the 32-byte `"OA32"` header). Unloaded regions of User SRAM are unspecified.*
 - *Clean Peripheral Handoff: Before jumping to `entry_addr`, the bootloader resets Video RAM (`FRAMEBUF`, `TEXT_BUF`, `SPRITE_OAM`, `SPRITE_PAT` zeroed; default CP437 font loaded in `FONT_RAM`; `VIDEO_CTRL.LATCH_OAM = 1`), resets the text console cursor to `(0, 0)` hidden (`vis = 0`, `blink = 0`), flushes all keyboard/mouse queues, centers the mouse at `(320, 240)`, restores default keyboard repeat (`500 ms` delay, `50 ms` rate), silences the piezo buzzer, turns all 3 status LEDs off, and leaves `os_ecall_handler = 0`.*
 - *SD Card: If booted via `ENTER`, the SD card is already initialized (`SD_STATUS_PRESENT | SD_STATUS_READY`); if booted via serial (`1`), a card may or may not be present/initialized (call `BIOS_SD_STATUS` / `BIOS_SD_INIT` before block I/O).*
 
@@ -515,12 +518,12 @@ Before copying any payload bytes or transferring control, the bootloader validat
 
 ### 7.2 Building Disk Images (CMake & Manual CLI)
 *TODO: Document both workflows for producing a bootable `.oa32` disk image:*
-- *Using the project's `oasis32_add_disk_executable()` helper in `cmake/oasis32.cmake` (which automatically enforces the `oasis32_abi` boundary, preprocesses `sd_payload.ld.S`, and emits `.elf`, `.dis`, `.map`, and `.oa32`).*
-- *A standalone manual CLI sequence (`gcc -E -P -x c` to preprocess `sd_payload.ld.S`, `gcc` to assemble/link, and `objcopy -Obinary` to emit `.oa32`) for programmers building outside CMake.*
+- *Using the project's `oasis32_add_disk_executable()` helper in `cmake/oasis32.cmake` (which automatically enforces the `oasis32_abi` boundary, preprocesses `sd_payload.ld.S`, emits `.elf`, `.dis`, `.map`, and `.oa32`, and patches the IEEE CRC-32 into the 32-byte header).*
+- *A standalone manual CLI sequence (`gcc -E -P -x c` to preprocess `sd_payload.ld.S`, `gcc` to assemble/link, `objcopy -Obinary` to emit `.oa32`, and patching the header's `crc32` field at offset `0x10`) for programmers building outside CMake.*
 *Briefly cross-reference §2.4 and §3.3 for `_start` entry placement and `.bss` zeroing requirements.*
 
-### 7.3 Encoding & Sending Disk Images Over Serial
-*TODO: Provide step-by-step host-side instructions for Base64-encoding a `.oa32` image and streaming it to Oasis32 over the 115,200 baud 8N1 USB-C serial port (cross-referencing §3.2 for bootloader menu Options `1` and `2` and framing rules). Include practical examples for common host environments (PowerShell / Windows, macOS / Linux `base64`, and terminal-emulator "send text file" or simple Python `pyserial` transfer) and troubleshooting tips (ensuring 115,200 8N1, no flow control, clean Base64 padding, and verifying transfer completion).*
+### 7.3 Sending Disk Images Over Serial
+*TODO: Provide step-by-step host-side instructions for streaming a raw binary `.oa32` image to Oasis32 over the 115,200 baud 8N1 USB-C serial port (cross-referencing §3.2 for bootloader menu Options `1` and `2`, cancel/timeout rules, and CRC-32 verification). Include practical examples for common host environments (Tera Term `File → Send file...` with Binary mode enabled on Windows, RealTerm, PowerShell / Python `pyserial`, or macOS / Linux raw serial device writes) and troubleshooting tips (ensuring 115,200 8N1, no flow control / XON-XOFF disabled, raw binary mode with no LF→CRLF translation, and verifying transfer completion).*
 
 ---
 

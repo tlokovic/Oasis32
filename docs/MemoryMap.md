@@ -86,7 +86,7 @@ Because Oasis32 uses the CH9350 ASIC for keyboard/mouse and CP2102N for serial, 
 
 | Sub-Region | Address Range | Size | Purpose |
 |:---|:---|---:|:---|
-| SD Sector Staging Buffer | `0x5010_0000`–`0x5010_01FF` | 512 B | Single-sector buffer for reading LBA 0 (`"OA32"` header + first 496 payload bytes) and BIOS SD helpers. |
+| SD Sector Staging Buffer | `0x5010_0000`–`0x5010_01FF` | 512 B | Single-sector buffer for reading LBA 0 (`"OA32"` header + first 480 payload bytes) and BIOS SD helpers. |
 | CH9350 HID State (`UART1`) | `0x5010_0200`–`0x5010_03FF` | 512 B | 11-byte State-2 packet assembler, active 8-byte keyboard report, key-event ring buffer, and accumulated mouse deltas (`dX`, `dY`, `wheel`, buttons). |
 | Debug Serial State (`UART0`) | `0x5010_0400`–`0x5010_04FF` | 256 B | Optional interrupt-driven RX ring buffer & state (backing the PL011's 32-byte hardware FIFOs). |
 | Video Control / Sync Block | `0x5010_0500`–`0x5010_053F` | 64 B | Shared Core 0 ↔ Core 1 state: `0x5010_0500` = `vsync_count` (`uint32_t`); `0x5010_0504` planned for packed 32-bit text cursor state (`[blink_frames:8 \| visible:8 \| row:8 \| col:8]`) for single-word atomic `sw`/`lw` between Core 0 `BIOS_TEXT_*` syscalls and Core 1 VBLANK latch. |
@@ -135,7 +135,7 @@ The Stage-1 System ROM executes directly from external QSPI Flash via the 16 KB 
 | Offset from `0x1000_0000` | Contents | Architectural Constraint |
 |:---|:---|:---|
 | `0x0000`–`0x0FFF` (first 4 KB) | Reset entry (`_start`), `PICOBIN` `IMAGE_DEF` metadata block, and **Vectored `mtvec` table** | RP2350 Silicon Boot ROM scans the first 4 KB of Flash for a valid `IMAGE_DEF` (`rp2350-datasheet.pdf §5.9.5, p. 363`). Vectored `mtvec` base must be 256-byte aligned (`riscv-privileged.pdf §3.1.7, p. 45`). |
-| Following `.text` | Core 0 BIOS bring-up, `ecall` ABI dispatcher, peripheral drivers, interactive boot menu / Base64 serial loader, SD bootloader, and Core 1 Video Coprocessor code | Pure XIP code; never referenced by hardcoded address from Stage-2 payloads (all calls go through `ecall`). |
+| Following `.text` | Core 0 BIOS bring-up, `ecall` ABI dispatcher, peripheral drivers, interactive boot menu / raw serial loader, SD bootloader, and Core 1 Video Coprocessor code | Pure XIP code; never referenced by hardcoded address from Stage-2 payloads (all calls go through `ecall`). |
 | Following `.rodata` | Boot splash / menu strings, `ecall` dispatch jump table, and default 2 KB `8×8` boot font (copied to `FONT_RAM` at startup) | Immutable read-only data in Flash. |
 
 ---
