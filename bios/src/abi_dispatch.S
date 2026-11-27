@@ -117,6 +117,8 @@ trap_sync_entry:
     beq     a7, t0, svc_kbd_flush
     li      t0, BIOS_KEYBOARD_STATE
     beq     a7, t0, svc_kbd_state
+    li      t0, BIOS_KEYBOARD_KEYCODE_TO_ASCII
+    beq     a7, t0, svc_kbd_keycode_to_ascii
     li      t0, BIOS_MOUSE_POS_READ
     beq     a7, t0, svc_mouse_pos_read
     li      t0, BIOS_MOUSE_POS_TRY_READ
@@ -226,6 +228,10 @@ svc_kbd_flush:
 
 svc_kbd_state:
     call    input_kbd_state
+    j       ecall_return
+
+svc_kbd_keycode_to_ascii:
+    call    input_kbd_keycode_to_ascii
     j       ecall_return
 
 svc_mouse_pos_read:

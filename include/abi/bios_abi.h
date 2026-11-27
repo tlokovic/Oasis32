@@ -96,6 +96,10 @@
  *   BIOS_KEYBOARD_STATE        (a0=dst_ptr) -> a0 = count (0..6) or ERR_INVALID_ARG,
  *                                              a1 = modifiers (KEY_MOD_* mask)
  *     Writes count active keycodes to dst_ptr[0..count-1], zero-padded to 8 B.
+ *   BIOS_KEYBOARD_KEYCODE_TO_ASCII (a0=keycode, a1=modifiers)
+ *                                           -> a0 = printable ASCII (0x20..0x7E) or 0
+ *     Translates an Oasis32 keycode (`include/abi/keycodes.h`) and modifier mask
+ *     to its printable ASCII character, or 0 if the keycode is non-printable.
  *
  * Mouse (screen-space 0..639 x 0..479, boot default 320x240):
  *   BIOS_MOUSE_POS_READ        ()           -> a0 = 0, a1 = x, a2 = y,
@@ -108,10 +112,11 @@
  *   BIOS_MOUSE_STATE           ()           -> a0 = buttons, a1 = x, a2 = y
  *   BIOS_MOUSE_SET_POS         (a0=x, a1=y) -> a0 = ERR_OK (0) or ERR_INVALID_ARG (-2)
  */
-#define BIOS_KEYBOARD_READ          0x30
-#define BIOS_KEYBOARD_TRY_READ      0x31
-#define BIOS_KEYBOARD_FLUSH         0x32
-#define BIOS_KEYBOARD_STATE         0x33
+#define BIOS_KEYBOARD_READ              0x30
+#define BIOS_KEYBOARD_TRY_READ          0x31
+#define BIOS_KEYBOARD_FLUSH             0x32
+#define BIOS_KEYBOARD_STATE             0x33
+#define BIOS_KEYBOARD_KEYCODE_TO_ASCII  0x34
 
 #define BIOS_MOUSE_POS_READ         0x38
 #define BIOS_MOUSE_POS_TRY_READ     0x39

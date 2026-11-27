@@ -29,6 +29,7 @@
 #include "abi/memory_map.h"
 #include "abi/bios_abi.h"
 #include "abi/devices.h"
+#include "abi/keycodes.h"
 #include "hw/rp2350_regs.h"
 #include "hw/oasis32_pins.h"
 #include "bios_config.h"
@@ -826,3 +827,70 @@ input_mouse_set_pos:
     li      a0, ERR_INVALID_ARG
     ret
 .size input_mouse_set_pos, . - input_mouse_set_pos
+
+/* ----------------------------------------------------------------------------
+ * input_kbd_keycode_to_ascii(a0 = keycode, a1 = modifiers)
+ *   -> a0 = printable ASCII (0x20..0x7E), or 0 if non-printable.
+ *   Shift-aware US keyboard layout for main block (KEY_A..KEY_SLASH) and
+ *   numeric keypad (KEY_KP_DIVIDE..KEY_KP_DOT).
+ * ---------------------------------------------------------------------------- */
+.global input_kbd_keycode_to_ascii
+.type input_kbd_keycode_to_ascii, @function
+input_kbd_keycode_to_ascii:
+    /* Main printable block: KEY_A (0x04) .. KEY_SLASH (0x38) */
+    li      t0, KEY_A
+    bltu    a0, t0, kbd_to_ascii_none
+    li      t0, KEY_SLASH
+    bgtu    a0, t0, kbd_to_ascii_keypad
+
+    addi    t1, a0, -KEY_A
+    andi    t2, a1, (KEY_MOD_LSHIFT | KEY_MOD_RSHIFT)
+    la      t0, kbd_ascii_normal
+    beqz    t2, 1f
+    la      t0, kbd_ascii_shift
+1:
+    add     t0, t0, t1
+    lbu     a0, 0(t0)
+    ret
+
+kbd_to_ascii_keypad:
+    /* Numeric keypad printable block: KEY_KP_DIVIDE (0x54) .. KEY_KP_DOT (0x63) */
+    li      t0, KEY_KP_DIVIDE
+    bltu    a0, t0, kbd_to_ascii_none
+    li      t0, KEY_KP_DOT
+    bgtu    a0, t0, kbd_to_ascii_none
+    addi    t1, a0, -KEY_KP_DIVIDE
+    la      t0, kbd_keypad_ascii
+    add     t0, t0, t1
+    lbu     a0, 0(t0)
+    ret
+
+kbd_to_ascii_none:
+    li      a0, 0
+    ret
+.size input_kbd_keycode_to_ascii, . - input_kbd_keycode_to_ascii
+
+/* ============================================================================
+ * Read-Only Keycode-to-ASCII Lookup Tables (.rodata in XIP Flash)
+ * ============================================================================ */
+.section .rodata, "a"
+
+/* Main block KEY_A (0x04) .. KEY_SLASH (0x38): 53 entries (0 = non-printable) */
+kbd_ascii_normal:
+    .byte 'a','b','c','d','e','f','g','h','i','j','k','l','m'
+    .byte 'n','o','p','q','r','s','t','u','v','w','x','y','z'
+    .byte '1','2','3','4','5','6','7','8','9','0'
+    .byte 0, 0, 0, 0, ' '               /* Enter, Esc, Backspace, Tab, Space */
+    .byte '-','=','[',']','\\','#',';','\'','`',',','.','/'
+
+kbd_ascii_shift:
+    .byte 'A','B','C','D','E','F','G','H','I','J','K','L','M'
+    .byte 'N','O','P','Q','R','S','T','U','V','W','X','Y','Z'
+    .byte '!','@','#','$','%','^','&','*','(',')'
+    .byte 0, 0, 0, 0, ' '               /* Enter, Esc, Backspace, Tab, Space */
+    .byte '_','+','{','}','|','~',':','"','~','<','>','?'
+
+/* Numeric keypad KEY_KP_DIVIDE (0x54) .. KEY_KP_DOT (0x63): 16 entries */
+kbd_keypad_ascii:
+    .byte '/','*','-','+',0             /* /, *, -, +, KP Enter */
+    .byte '1','2','3','4','5','6','7','8','9','0','.'

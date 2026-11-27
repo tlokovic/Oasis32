@@ -24,6 +24,7 @@
 #include "abi/memory_map.h"
 #include "abi/bios_abi.h"
 #include "abi/devices.h"
+#include "abi/keycodes.h"
 
 #define DEMO_LED_INTERVAL_US        1000000
 #define DEMO_PIEZO_PERIOD_US        3000000
@@ -1216,10 +1217,10 @@ demo_log_kbd_event:
 /* ----------------------------------------------------------------------------
  * demo_handle_kbd_text(a0 = packed key_event):
  *   Processes key-down events for the BIOS_BLK_TEXT console & cursor demo:
- *     - Printable ASCII keys -> BIOS_TEXT_PUTC at current cursor location
- *     - Enter (0x28 / 0x58)  -> BIOS_TEXT_PUTC('\n') (start of next line)
- *     - Backspace (0x2A)     -> BIOS_TEXT_PUTC('\b')
- *     - Arrow keys (0x4F..0x52): move cursor with edge wrapping & scrolling
+ *     - Printable ASCII keys -> BIOS_KEYBOARD_KEYCODE_TO_ASCII + BIOS_TEXT_PUTC
+ *     - KEY_ENTER / KEY_KP_ENTER -> BIOS_TEXT_PUTC('\n') (start of next line)
+ *     - KEY_BACKSPACE            -> BIOS_TEXT_PUTC('\b')
+ *     - Arrow keys (KEY_RIGHT..KEY_UP): move cursor with edge wrapping & scroll
  *       * Off right  -> start of next line (scroll up if off bottom)
  *       * Off left   -> end of previous line (scroll down if off top)
  *       * Off bottom -> scroll up, stay on row 59
@@ -1236,59 +1237,35 @@ demo_handle_kbd_text:
     sw      ra, 12(sp)
     sw      s0, 8(sp)
 
-    andi    t1, a0, KEY_EVENT_CODE_MASK /* t1 = USB HID keycode */
+    andi    t1, a0, KEY_EVENT_CODE_MASK /* t1 = Oasis32 keycode */
     srli    t2, a0, KEY_EVENT_MOD_SHIFT
     andi    t2, t2, 0xFF                /* t2 = modifiers */
 
-    /* Enter (0x28) or Keypad Enter (0x58) -> '\n' */
-    li      t0, 0x28
+    /* Enter or Keypad Enter -> '\n' */
+    li      t0, KEY_ENTER
     beq     t1, t0, kbd_do_enter
-    li      t0, 0x58
+    li      t0, KEY_KP_ENTER
     beq     t1, t0, kbd_do_enter
 
-    /* Backspace (0x2A) -> '\b' */
-    li      t0, 0x2A
+    /* Backspace -> '\b' */
+    li      t0, KEY_BACKSPACE
     beq     t1, t0, kbd_do_bs
 
-    /* Cursor Arrow Keys (USB HID Usage Page 0x07: 0x4F..0x52) */
-    li      t0, 0x4F                    /* Right Arrow */
+    /* Cursor Arrow Keys */
+    li      t0, KEY_RIGHT
     beq     t1, t0, kbd_cur_right
-    li      t0, 0x50                    /* Left Arrow */
+    li      t0, KEY_LEFT
     beq     t1, t0, kbd_cur_left
-    li      t0, 0x51                    /* Down Arrow */
+    li      t0, KEY_DOWN
     beq     t1, t0, kbd_cur_down
-    li      t0, 0x52                    /* Up Arrow */
+    li      t0, KEY_UP
     beq     t1, t0, kbd_cur_up
 
-    /* Main printable block: 0x04..0x38 */
-    li      t0, 0x04
-    bltu    t1, t0, kbd_text_done
-    li      t0, 0x38
-    bgtu    t1, t0, kbd_check_keypad
-
-    addi    t1, t1, -0x04
-    andi    t2, t2, (KEY_MOD_LSHIFT | KEY_MOD_RSHIFT)
-    la      t0, hid_ascii_normal
-    beqz    t2, 1f
-    la      t0, hid_ascii_shift
-1:
-    add     t0, t0, t1
-    lbu     a0, 0(t0)
-    beqz    a0, kbd_text_done
-    li      a7, BIOS_TEXT_PUTC
+    /* Translate printable keycodes via BIOS_KEYBOARD_KEYCODE_TO_ASCII */
+    mv      a0, t1
+    mv      a1, t2
+    li      a7, BIOS_KEYBOARD_KEYCODE_TO_ASCII
     ecall
-    j       kbd_text_done
-
-kbd_check_keypad:
-    /* Keypad printable block: 0x54..0x63 */
-    li      t0, 0x54
-    bltu    t1, t0, kbd_text_done
-    li      t0, 0x63
-    bgtu    t1, t0, kbd_text_done
-    addi    t1, t1, -0x54
-    la      t0, hid_keypad_ascii
-    add     t0, t0, t1
-    lbu     a0, 0(t0)
     beqz    a0, kbd_text_done
     li      a7, BIOS_TEXT_PUTC
     ecall
@@ -1593,23 +1570,3 @@ str_sd_wr_fail:
     .asciz "[SD] WRITE FAIL\r\n"
 str_sd_rd_fail:
     .asciz "[SD] READ FAIL\r\n"
-
-/* USB HID Usage Page 0x07 -> ASCII lookup tables (codes 0x04..0x38, 53 bytes) */
-hid_ascii_normal:
-    .byte 'a','b','c','d','e','f','g','h','i','j','k','l','m'
-    .byte 'n','o','p','q','r','s','t','u','v','w','x','y','z'
-    .byte '1','2','3','4','5','6','7','8','9','0'
-    .byte 0, 0, 0, 0, ' '               /* 0x28..0x2C: Enter, Esc, BS, Tab, Space */
-    .byte '-','=','[',']','\\','#',';','\'','`',',','.','/'
-
-hid_ascii_shift:
-    .byte 'A','B','C','D','E','F','G','H','I','J','K','L','M'
-    .byte 'N','O','P','Q','R','S','T','U','V','W','X','Y','Z'
-    .byte '!','@','#','$','%','^','&','*','(',')'
-    .byte 0, 0, 0, 0, ' '               /* 0x28..0x2C: Enter, Esc, BS, Tab, Space */
-    .byte '_','+','{','}','|','~',':','"','~','<','>','?'
-
-/* USB HID Keypad printable codes (0x54..0x63, 16 bytes) */
-hid_keypad_ascii:
-    .byte '/','*','-','+',0             /* 0x54..0x58: /, *, -, +, KP Enter */
-    .byte '1','2','3','4','5','6','7','8','9','0','.'
