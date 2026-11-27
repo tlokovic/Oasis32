@@ -22,6 +22,7 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * 640x480 1bpp monochrome memory-mapped framebuffer for bitmap graphics
   * 80x60 memory-mapped character text buffer that overlays the bitmap graphics with bitwise `OR`
   * User-modifiable 256-glyph 8x8 memory-mapped font (IBM Code Page 437 character set)
+  * Optional non-destructive hardware blinking text cursor (inverts the active 8x8 cell on-the-fly without modifying the text buffer)
   * Zero the text buffer for pure bitmap graphics, zero the framebuffer for pure text mode, or use both at the same time!
   * 16 16x16 hardware sprites, assignable to 58 memory-mapped animation/tile patterns, each with its own opacity mask
   * Sprites support horizontal and vertical flipping, three blending modes (opaque, bitwise OR, bitwise XOR), and can render above or below the text layer
@@ -29,7 +30,8 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * A second Hazard3 core acts as a dedicated video coprocessor driving all of the above with zero CPU overhead and no required synchronization on the main core.
 * **Peripheral Access Through Stable `ecall` Syscall ABI**
   * Custom flash-resident BIOS isolates hardware details behind RISC-V `ecall` syscalls
-  * **USB Keyboard & Mouse** events presented through a simple syscells (no software USB stack required)
+  * **Text Console** (80×60 cursor positioning, character/string output with Unix newlines, line wrapping, auto-scrolling, manual up/down scroll, text clearing, and configurable hardware blinking cursor)
+  * **USB Keyboard & Mouse** events presented through simple syscalls (no software USB stack required)
   * **SD Card Storage** (raw 512-byte LBA block I/O with card-detect hot-swapping support)
   * **USB-C Serial Port** (presents to host PCs as a standard serial device for terminal emulators or host scripts)
   * **Monotonic Microsecond Timer & VSYNC Frame Sync**
