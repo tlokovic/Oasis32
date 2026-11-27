@@ -187,7 +187,42 @@ If Oasis32 software triggers a synchronous processor exception other than `ecall
 ## 2. Memory Map
 
 ### 2.1 Address Space Overview
-*TODO: Present an ASCII memory map diagram and summary table of all programmer-visible memory regions (`0x2000_0000`–`0x2007_FFFF`, 512 KB total: 464 KB User SRAM + 48 KB Public Video Memory Block). Explicitly state that all other addresses in the 32-bit space are reserved/off-limits.*
+
+Oasis32 exposes a single contiguous **512 KB** (`524,288` bytes) public RAM window spanning `0x2000_0000`–`0x2007_FFFF`, divided into **464 KB of User SRAM** and **48 KB of Public Video RAM**. Every address outside this window is reserved and off-limits to Oasis32 software.
+
+```text
+0xFFFF_FFFF ┌──────────────────────────────────────────────────────────────┐
+            │  Reserved / Off-Limits                                       │
+0x2008_0000 ╞══════════════════════════════════════════════════════════════╡
+            │  Public Video Memory Block — 48 KB (49,152 B), R/W Data      │
+            │    0x2007_F180–0x2007_FFFF   SPRITE_PAT  (3,712 B)           │
+            │    0x2007_F100–0x2007_F17F   SPRITE_OAM    (128 B)           │
+            │    0x2007_F0C0–0x2007_F0FF   VIDEO_CTRL     (64 B)           │
+            │    0x2007_DE00–0x2007_F0BF   TEXT_BUF    (4,800 B)           │
+            │    0x2007_D600–0x2007_DDFF   FONT_RAM    (2,048 B)           │
+            │    0x2007_4000–0x2007_D5FF   FRAMEBUF   (38,400 B)           │
+0x2007_4000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_STACK_TOP
+            │                                                              │
+            │  User SRAM — 464 KB (475,136 B), R/W/X                       │
+            │    • Program code (.text), constants (.rodata), data (.data) │
+            │    • Uninitialized globals (.bss) and dynamic heap (↑)       │
+            │    • Program stack (starts at 0x2007_4000, grows ↓)          │
+            │                                                              │
+0x2000_0000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_RAM_BASE
+            │  Reserved / Off-Limits                                       │
+0x0000_0000 └──────────────────────────────────────────────────────────────┘
+```
+
+#### Top-Level Address Map
+
+| Region | Symbolic Constants | Address Range (Incl.) | Size (Bytes) | Size (Hex) | Permitted Access |
+|:---|:---|:---|---:|---:|:---|
+| **Reserved (Low)** | — | `0x0000_0000`–`0x1FFF_FFFF` | — | — | **Prohibited** |
+| **User SRAM** | `USER_RAM_BASE` .. `USER_RAM_END` | `0x2000_0000`–`0x2007_3FFF` | `475,136` | `0x0007_4000` | Read / Write / Execute |
+| **Public Video RAM** | `VIDEO_RAM_BASE` .. `VIDEO_RAM_END` | `0x2007_4000`–`0x2007_FFFF` | `49,152` | `0x0000_C000` | Read / Write (Data Only) |
+| **Reserved (High)** | — | `0x2008_0000`–`0xFFFF_FFFF` | — | — | **Prohibited** |
+
+All symbolic memory-map constants are defined in `include/abi/memory_map.h`. Software should reference these constants rather than hardcoding raw addresses.
 
 ### 2.2 User SRAM (`USER_RAM_BASE`–`USER_RAM_END`)
 *TODO: Document the 464 KB (`475,136` bytes, `0x2000_0000`–`0x2007_3FFF`) contiguous User SRAM window: typical placement of `.text`, `.rodata`, `.data`, `.bss`, upward-growing heap, and downward-growing user stack initialized to `USER_STACK_TOP` (`0x2007_4000`, 16-byte aligned per `ILP32`). Warn explicitly about stack overflow/underflow behavior in the absence of hardware guard pages (overflow corrupts `.bss`/heap/code; underflow above `0x2007_4000` corrupts the top of `FRAMEBUF`).*
