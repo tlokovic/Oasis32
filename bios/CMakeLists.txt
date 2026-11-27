@@ -46,6 +46,7 @@ oasis32_add_bios_executable(oasis32_bios
     src/abi_dispatch.S
     src/startup_tune.S
     src/splash.S
+    src/bootloader.S
     src/hardware_demo.S
     src/main.S
 )

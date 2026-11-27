@@ -1,13 +1,21 @@
 /*
  * ============================================================================
- * Oasis32 Stage-1 BIOS — Main Entry Point & Interactive Boot Menu
+ * Oasis32 Stage-1 BIOS — Main Entry Point, Auto-Boot & Interactive Boot Menu
  * ============================================================================
- * Displays the startup boot menu on the 80x60 DVI text display using the
- * resident BIOS_BLK_TEXT and BIOS_BLK_INPUT services, dispatching:
- *   - ENTER : Boot from SD Card                  (stubbed for now)
- *   - 1     : Boot disk image from serial        (stubbed for now)
- *   - 2     : Write disk image from serial to SD (stubbed for now)
- *   - 3     : Run built-in hardware demo
+ * Startup sequence (docs/BootBehavior.md §3.5):
+ *   1. Display 640x480 splash bitmap with 5 px white border, play startup
+ *      tune, hold 3 seconds, clear framebuffer.
+ *   2. Attempt automatic SD boot (boot_auto_sd): if a card with a valid
+ *      "OA32" header is seated, boot immediately; otherwise fall through to
+ *      the interactive 80x60 DVI boot menu.
+ *   3. In the boot menu, poll both keyboard (BIOS_KEYBOARD_TRY_READ) and SD
+ *      card status (BIOS_SD_STATUS) continuously, dynamically updating
+ *      disabled states for [ENTER] and [2] without re-reading LBA 0 while an
+ *      invalid card stays seated:
+ *        - ENTER : Boot from SD Card                  (valid OA32 disk only)
+ *        - 1     : Boot disk image from serial        (always enabled)
+ *        - 2     : Write disk image from serial to SD (any seated disk)
+ *        - 3     : Run built-in hardware demo         (always enabled)
  *
  * Note: Because BIOS_TEXT_PUTS enforces User SRAM bounds on caller pointers,
  * Flash-resident BIOS strings are printed via a local BIOS_TEXT_PUTC loop.
@@ -21,12 +29,16 @@
 
 #define BOOT_SPLASH_WAIT_US         3000000 /* 3 s splash hold after tune */
 
+#define DISK_STATE_NONE             0
+#define DISK_STATE_INVALID          1
+#define DISK_STATE_VALID            2
+
 .section .text, "ax"
 
 .global bios_main
 .type bios_main, @function
 bios_main:
-    /* Startup splash: display embedded 640x480 bitmap, play tune, hold 3 s */
+    /* 1. Startup splash: display embedded 640x480 bitmap, play tune, hold 3 s */
     li      a0, 0
     li      a1, 0
     li      a7, BIOS_TEXT_SET_CURSOR_STATE
@@ -50,8 +62,14 @@ bios_main:
     sub     t0, a0, s0
     bltu    t0, s1, 1b
 
-    /* Clear splash bitmap from framebuffer before entering the boot menu */
+    /* Clear splash bitmap from framebuffer before auto-boot / boot menu */
     call    boot_clear_framebuf
+
+    /* 2. Post-splash automatic SD boot attempt.
+     *    If a valid OA32 disk is inserted, boot_auto_sd boots and never returns.
+     *    Otherwise it returns the initial menu disk state in a0 (NONE/INVALID). */
+    call    boot_auto_sd
+    mv      s2, a0                      /* s2 = current DISK_STATE_* */
 
 boot_menu_draw:
     /* Clear text overlay, hide cursor while drawing, flush stale key events */
@@ -93,8 +111,34 @@ boot_menu_draw:
     andi    a0, s0, 0xFF
     call    boot_text_print_u8_dec
 
-    /* Print menu options and prompt */
-    la      a0, str_menu_body
+    /* Divider + Option [ENTER] */
+    la      a0, str_menu_div_enter
+    call    boot_text_puts
+
+    li      t0, DISK_STATE_NONE
+    beq     s2, t0, 1f
+    li      t0, DISK_STATE_INVALID
+    beq     s2, t0, 2f
+    j       3f
+1:
+    la      a0, str_dis_no_disk
+    call    boot_text_puts
+    j       3f
+2:
+    la      a0, str_dis_bad_hdr
+    call    boot_text_puts
+3:
+    /* Option [1] and Option [2] */
+    la      a0, str_menu_opt1_opt2
+    call    boot_text_puts
+
+    li      t0, DISK_STATE_NONE
+    bne     s2, t0, 4f
+    la      a0, str_dis_no_disk
+    call    boot_text_puts
+4:
+    /* Option [3] and prompt */
+    la      a0, str_menu_opt3_prompt
     call    boot_text_puts
 
     /* Show blinking cursor (30 frames = 0.5 s half-period) at prompt */
@@ -103,51 +147,105 @@ boot_menu_draw:
     li      a7, BIOS_TEXT_SET_CURSOR_STATE
     ecall
 
-boot_menu_wait_key:
-    li      a7, BIOS_KEYBOARD_READ
+boot_menu_poll:
+    /* 1. Poll SD card presence (GP6) for live menu state updates */
+    li      a7, BIOS_SD_STATUS
     ecall
+    mv      t0, a0                      /* t0 = SD_STATUS_* bitmask */
+    andi    t1, t0, SD_STATUS_PRESENT
+
+    li      t2, DISK_STATE_NONE
+    beq     s2, t2, poll_sd_was_none
+
+    /* Card was previously inserted (INVALID or VALID) */
+    beqz    t1, poll_sd_removed         /* Card removed -> NONE + redraw */
+
+    /* If previously VALID, check whether a fast card swap cleared READY */
+    li      t2, DISK_STATE_VALID
+    bne     s2, t2, poll_keyboard       /* INVALID & still seated: do NOT re-read LBA 0 */
+    andi    t2, t0, SD_STATUS_READY
+    bnez    t2, poll_keyboard
+    j       poll_sd_reprobe
+
+poll_sd_was_none:
+    beqz    t1, poll_keyboard           /* Still no card */
+
+poll_sd_reprobe:
+    call    boot_probe_sd
+    mv      s2, a0
+    j       boot_menu_draw
+
+poll_sd_removed:
+    li      s2, DISK_STATE_NONE
+    j       boot_menu_draw
+
+poll_keyboard:
+    /* 2. Non-blocking keyboard poll */
+    li      a7, BIOS_KEYBOARD_TRY_READ
+    ecall
+    bltz    a0, boot_menu_poll
 
     /* Ignore key-up and typematic repeat events */
     li      t0, KEY_EVENT_DOWN_BIT
     and     t0, a0, t0
-    beqz    t0, boot_menu_wait_key
+    beqz    t0, boot_menu_poll
 
     li      t0, KEY_EVENT_REPEAT_BIT
     and     t0, a0, t0
-    bnez    t0, boot_menu_wait_key
+    bnez    t0, boot_menu_poll
 
     andi    t1, a0, KEY_EVENT_CODE_MASK
 
-    /* Option ENTER: Boot from SD Card (not yet implemented) */
+    /* Option ENTER: Boot from SD Card (enabled only when DISK_STATE_VALID) */
     li      t0, KEY_ENTER
-    beq     t1, t0, boot_menu_wait_key
+    beq     t1, t0, boot_menu_try_sd
     li      t0, KEY_KP_ENTER
-    beq     t1, t0, boot_menu_wait_key
+    beq     t1, t0, boot_menu_try_sd
 
-    /* Option 1: Boot from disk image over serial (not yet implemented) */
+    /* Option 1: Boot from disk image over serial (always enabled) */
     li      t0, KEY_1
-    beq     t1, t0, boot_menu_wait_key
+    beq     t1, t0, boot_menu_serial_boot
     li      t0, KEY_KP_1
-    beq     t1, t0, boot_menu_wait_key
+    beq     t1, t0, boot_menu_serial_boot
 
-    /* Option 2: Write disk image from serial to SD (not yet implemented) */
+    /* Option 2: Write disk image from serial to SD (enabled when disk seated) */
     li      t0, KEY_2
-    beq     t1, t0, boot_menu_wait_key
+    beq     t1, t0, boot_menu_try_write_sd
     li      t0, KEY_KP_2
-    beq     t1, t0, boot_menu_wait_key
+    beq     t1, t0, boot_menu_try_write_sd
 
-    /* Option 3: Run built-in hardware demo */
+    /* Option 3: Run built-in hardware demo (always enabled) */
     li      t0, KEY_3
     beq     t1, t0, boot_menu_run_demo
     li      t0, KEY_KP_3
     beq     t1, t0, boot_menu_run_demo
 
-    j       boot_menu_wait_key
+    j       boot_menu_poll
+
+boot_menu_try_sd:
+    li      t0, DISK_STATE_VALID
+    bne     s2, t0, boot_menu_poll
+    call    boot_from_sd                /* Does not return */
+    j       boot_menu_draw
+
+boot_menu_serial_boot:
+    call    boot_from_serial            /* Returns only on ESC/Ctrl-C cancel */
+    j       boot_menu_draw
+
+boot_menu_try_write_sd:
+    li      t0, DISK_STATE_NONE
+    beq     s2, t0, boot_menu_poll
+    call    boot_write_sd               /* Returns on cancel or write complete */
+    call    boot_probe_sd               /* Re-evaluate card header after write */
+    mv      s2, a0
+    j       boot_menu_draw
 
 boot_menu_run_demo:
     li      a7, BIOS_TEXT_CLEAR
     ecall
     call    hardware_demo
+    call    boot_probe_sd
+    mv      s2, a0
     j       boot_menu_draw
 .size bios_main, . - bios_main
 
@@ -292,5 +390,17 @@ boot_clear_framebuf:
 str_menu_top:
     .asciz  "\n  ============================================================================\n    Oasis32 System ROM v"
 
-str_menu_body:
-    .asciz  "\n  ============================================================================\n\n    [ENTER]  Boot from SD Card\n    [1]      Boot from disk image read from serial\n    [2]      Write disk image read from serial to SD Card\n    [3]      Run built-in hardware demo\n\n  Select an option: "
+str_menu_div_enter:
+    .asciz  "\n  ============================================================================\n\n  [ENTER]  Boot from SD Card"
+
+str_menu_opt1_opt2:
+    .asciz  "\n  [1]      Boot from disk image read from serial\n  [2]      Write disk image from serial to SD Card"
+
+str_menu_opt3_prompt:
+    .asciz  "\n  [3]      Run built-in hardware demo\n\n  Select an option: "
+
+str_dis_no_disk:
+    .asciz  " [disabled, no disk inserted]"
+
+str_dis_bad_hdr:
+    .asciz  " [disabled, not a valid OA32 header]"
