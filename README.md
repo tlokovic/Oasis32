@@ -41,8 +41,8 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * No built-in OS: insert an SD card containing a disk image to boot into demos, utilities, games, or a custom OS
 * **Disk-image-over-serial for rapid development**
   * Cross-assemble an Oasis32 disk image on a modern machine, then send it over USB serial to:
-    * Boot directly from the disk image without an SD card; OR
-    * Write the image to a SD card for future use
+    * Boot directly from the received disk image; OR
+    * Write the received disk image to an SD card for future use
   
 ## Documentation
 
