@@ -1223,6 +1223,7 @@ demo_log_kbd_event:
 /* ----------------------------------------------------------------------------
  * demo_handle_kbd_text(a0 = packed key_event):
  *   Processes key-down events for the BIOS_BLK_TEXT console & cursor demo:
+ *     - KEY_ESC                  -> BIOS_SYS_REBOOT (return to boot menu)
  *     - Printable ASCII keys -> BIOS_KEYBOARD_KEYCODE_TO_ASCII + BIOS_TEXT_PUTC
  *     - KEY_ENTER / KEY_KP_ENTER -> BIOS_TEXT_PUTC('\n') (start of next line)
  *     - KEY_BACKSPACE            -> BIOS_TEXT_PUTC('\b')
@@ -1246,6 +1247,10 @@ demo_handle_kbd_text:
     andi    t1, a0, KEY_EVENT_CODE_MASK /* t1 = Oasis32 keycode */
     srli    t2, a0, KEY_EVENT_MOD_SHIFT
     andi    t2, t2, 0xFF                /* t2 = modifiers */
+
+    /* Escape -> full system reboot back to boot menu */
+    li      t0, KEY_ESC
+    beq     t1, t0, kbd_do_reboot
 
     /* Enter or Keypad Enter -> '\n' */
     li      t0, KEY_ENTER
@@ -1276,6 +1281,10 @@ demo_handle_kbd_text:
     li      a7, BIOS_TEXT_PUTC
     ecall
     j       kbd_text_done
+
+kbd_do_reboot:
+    li      a7, BIOS_SYS_REBOOT
+    ecall
 
 kbd_do_enter:
     li      a0, '\n'

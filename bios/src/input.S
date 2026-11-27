@@ -629,16 +629,29 @@ input_kbd_try_read:
 .size input_kbd_try_read, . - input_kbd_try_read
 
 /* ----------------------------------------------------------------------------
- * input_kbd_read() -> a0 = key_event (>= 0), blocking
+ * input_kbd_read() -> a0 = key_event (>= 0), blocking (race-free WFI sleep)
+ *   Sleeps via WFI when the queue is empty so Core 0 generates zero AHB5
+ *   traffic against USB DPRAM while waiting (preventing AHB5 splitter
+ *   contention with Core 1's HSTX/DMA video pipeline).
  * ---------------------------------------------------------------------------- */
 .global input_kbd_read
 .type input_kbd_read, @function
 input_kbd_read:
     addi    sp, sp, -16
     sw      ra, 12(sp)
+    sw      s0, 8(sp)
 1:
+    csrrci  s0, mstatus, MSTATUS_MIE_BIT    /* Close check->WFI race window */
     call    input_kbd_try_read
-    bltz    a0, 1b
+    bgez    a0, 2f
+    wfi                                     /* Wakes on pending enabled IRQ even with MIE=0 */
+    andi    t0, s0, MSTATUS_MIE_BIT
+    csrs    mstatus, t0                     /* Take pending IRQ */
+    j       1b
+2:
+    andi    t0, s0, MSTATUS_MIE_BIT
+    csrs    mstatus, t0
+    lw      s0, 8(sp)
     lw      ra, 12(sp)
     addi    sp, sp, 16
     ret
@@ -753,9 +766,19 @@ input_mouse_pos_try_read:
 input_mouse_pos_read:
     addi    sp, sp, -16
     sw      ra, 12(sp)
+    sw      s0, 8(sp)
 1:
+    csrrci  s0, mstatus, MSTATUS_MIE_BIT
     call    input_mouse_pos_try_read
-    bltz    a0, 1b
+    bgez    a0, 2f
+    wfi
+    andi    t0, s0, MSTATUS_MIE_BIT
+    csrs    mstatus, t0
+    j       1b
+2:
+    andi    t0, s0, MSTATUS_MIE_BIT
+    csrs    mstatus, t0
+    lw      s0, 8(sp)
     lw      ra, 12(sp)
     addi    sp, sp, 16
     ret
@@ -817,9 +840,19 @@ input_mouse_btn_try_read:
 input_mouse_btn_read:
     addi    sp, sp, -16
     sw      ra, 12(sp)
+    sw      s0, 8(sp)
 1:
+    csrrci  s0, mstatus, MSTATUS_MIE_BIT
     call    input_mouse_btn_try_read
-    bltz    a0, 1b
+    bgez    a0, 2f
+    wfi
+    andi    t0, s0, MSTATUS_MIE_BIT
+    csrs    mstatus, t0
+    j       1b
+2:
+    andi    t0, s0, MSTATUS_MIE_BIT
+    csrs    mstatus, t0
+    lw      s0, 8(sp)
     lw      ra, 12(sp)
     addi    sp, sp, 16
     ret

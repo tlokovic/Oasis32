@@ -261,7 +261,9 @@ core1_video_entry:
     li      t1, HSTX_LANE1_N
     sw      t1, HSTX_BIT7_OFF(t0)
 
-    /* 3. Mux GP12-GP19 to HSTX (FUNCSEL=0), clear ISO & OD, set SLEWFAST */
+    /* 3. Mux GP12-GP19 to HSTX (FUNCSEL=0), clear ISO & OD, set SLEWFAST
+     *    while HSTX_CSR is still disabled so all 4 TMDS differential pairs
+     *    start toggling simultaneously on the exact same clock edge. */
     li      t1, IO_BANK0_BASE + IO_DVI_BASE_CTRL_OFF
     li      t2, PADS_BANK0_BASE + ATOMIC_CLR + PADS_DVI_BASE_OFF
     li      t3, PADS_BANK0_BASE + ATOMIC_SET + PADS_DVI_BASE_OFF
@@ -278,16 +280,14 @@ core1_video_entry:
     addi    t4, t4, -1
     bnez    t4, 2b
 
-    /* 4. Enable HSTX serializer + command expander */
-    li      t1, CFG_HSTX_CSR_DVI_ENABLE
-    sw      t1, HSTX_CSR_OFF(t0)
-
-    /* 5. Prioritize DMA reads/writes on the AHB5 crossbar */
+    /* 4. Prioritize DMA reads/writes and Core 1 (PROC1) on the AHB5 crossbar */
     li      t0, BUSCTRL_BASE
-    li      t1, BUSCTRL_PRIO_DMA_RW
+    li      t1, BUSCTRL_PRIO_VIDEO
     sw      t1, BUSCTRL_PRIORITY_OFF(t0)
 
-    /* 6. Pre-load DMA CH0 (PING) and CH1 (PONG) with scanlines 0 and 1 */
+    /* 5. Pre-load DMA CH0 (PING) and CH1 (PONG) with scanlines 0 and 1, and
+     *    trigger CH0 BEFORE enabling HSTX so the HSTX FIFO is pre-filled with
+     *    valid VBLANK sync symbols before the first TMDS clock edge leaves the pins. */
     li      s0, DMA_BASE
     li      s5, BIOS_CORE1_CMD_LIST
     addi    t1, s5, CMD_VBLANK_OFF_OFF
@@ -341,9 +341,15 @@ core1_video_entry:
     li      s10, BIOS_CORE1_OAM_LATCH
     li      s11, VIDEO_SPRITE_PAT_BASE
 
-    /* Start Channel 0 (PING) via MULTI_CHAN_TRIGGER */
+    /* Start Channel 0 (PING) via MULTI_CHAN_TRIGGER to prime HSTX FIFO */
     li      t1, 0x1
     sw      t1, DMA_MULTI_TRIG_OFF(s0)
+
+    /* 6. Enable HSTX serializer + command expander now that pads are ready
+     *    and the HSTX FIFO is primed with VBLANK sync symbols. */
+    li      t0, HSTX_CTRL_BASE
+    li      t1, CFG_HSTX_CSR_DVI_ENABLE
+    sw      t1, HSTX_CSR_OFF(t0)
 
     /* 7. Signal Core 0 that HSTX DVI output is live */
     li      t0, SIO_BASE

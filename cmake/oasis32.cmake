@@ -177,11 +177,18 @@ function(oasis32_add_disk_executable TARGET_NAME)
         -Wl,-Map=$<TARGET_FILE:${TARGET_NAME}>.map
     )
 
+    if (NOT Python3_EXECUTABLE)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    endif()
+
+    set(_patch_crc_script "${CMAKE_SOURCE_DIR}/cmake/patch_oa32_crc.py")
+
     add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
         COMMAND ${CMAKE_OBJDUMP} -h $<TARGET_FILE:${TARGET_NAME}> > $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.dis
         COMMAND ${CMAKE_OBJDUMP} -d $<TARGET_FILE:${TARGET_NAME}> >> $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.dis
         COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:${TARGET_NAME}> $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.oa32
-        COMMENT "Generating ${TARGET_NAME}.dis and ${TARGET_NAME}.oa32 disk image"
+        COMMAND ${Python3_EXECUTABLE} "${_patch_crc_script}" $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.oa32
+        COMMENT "Generating ${TARGET_NAME}.dis and CRC-stamped ${TARGET_NAME}.oa32 disk image"
         VERBATIM
     )
 endfunction()

@@ -229,6 +229,7 @@
 
 #define BUSCTRL_PRIORITY_OFF        0x000
 #define BUSCTRL_PRIO_DMA_RW         ((1 << 12) | (1 << 8))
+#define BUSCTRL_PRIO_VIDEO          ((1 << 12) | (1 << 8) | (1 << 4)) /* DMA_W | DMA_R | PROC1 */
 
 #define DMA_CH0_READ_OFF            0x000
 #define DMA_CH0_WRITE_OFF           0x004
