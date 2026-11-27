@@ -30,11 +30,11 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
   * A second Hazard3 core acts as a dedicated video coprocessor driving all of the above with zero CPU overhead and no required synchronization on the main core.
 * **Peripheral Access Through Stable `ecall` Syscall ABI**
   * Custom flash-resident BIOS isolates hardware details behind RISC-V `ecall` syscalls
-  * **Text Console** (80×60 cursor positioning, character/string output with Unix newlines, line wrapping, auto-scrolling, manual up/down scroll, text clearing, and configurable hardware blinking cursor)
   * **USB Keyboard & Mouse** events presented through simple syscalls (no software USB stack required)
   * **SD Card Storage** (raw 512-byte LBA block I/O with card-detect hot-swapping support)
   * **USB-C Serial Port** (presents to host PCs as a standard serial device for terminal emulators or host scripts)
-  * **Monotonic Microsecond Timer & VSYNC Frame Sync**
+  * **Text Console** (80×60 cursor positioning, character/string output with Unix newlines, line wrapping, auto-scrolling, manual up/down scroll, text clearing, and configurable hardware blinking cursor)
+  * **Monotonic Microsecond Timer, VSYNC Frame Sync, Reset**
   * **Three User-Controllable Status LEDs** (Red, Green, Blue)
   * **Piezo Buzzer** (PWM tone generation)
 * **Classic "Boot from Removable Disk" Vibe**
