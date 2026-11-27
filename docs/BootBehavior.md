@@ -67,9 +67,11 @@ Our permanent, bare-metal RISC-V assembly firmware stored in QSPI Flash and exec
    * Initialize core peripherals: DVI/HSTX video output, `UART0` (debug serial), `UART1` (CH9350 keyboard/mouse), `SPI0` (SD card), `PWM` (piezo buzzer), `TIMER0`, and status LEDs.
 2. **Resident BIOS / HAL Services:**
    * Keep low-level hardware-access routines permanently resident in XIP Flash so that SD-loaded software does not need to re-implement drivers for the display, keyboard/mouse, SD block I/O, serial port, timer, buzzer, or LEDs.
-3. **Interactive Boot Menu, Serial Loader & SD Bootloader:**
-   * Present an interactive boot menu (initially over `UART0`; later in DVI text mode) allowing the user to boot from an SD card (`ENTER`), boot a raw binary `.oa32` disk image streamed directly into SRAM over `UART0` (`1`), write a raw binary `.oa32` disk image received over `UART0` to an SD card (`2`), or run the built-in hardware demo (`3`).
-   * Detect an inserted SD card (`GP6`), perform the SPI initialization handshake, read and validate the packed 32-byte `"OA32"` **Boot Image Header**, copy the **Boot Payload** into User SRAM, verify its IEEE **CRC-32** checksum, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
+3. **Startup Splash, Auto-Boot & Interactive Boot Menu:**
+   * Display a 640×480 startup splash bitmap (framed by a 5-pixel white outer border to ensure reliable DVI monitor/capture-card signal lock-on), play the startup tune, and hold for 3 seconds.
+   * Immediately check for an inserted SD card (`GP6`) with a valid packed 32-byte `"OA32"` **Boot Image Header** at LBA 0; if present and valid, automatically attempt to boot from it.
+   * Otherwise (no disk inserted, invalid header, or boot error), present an interactive boot menu on the 80×60 DVI text display (controlled via USB keyboard) with live SD card/header status polling, allowing the user to boot from an SD card (`ENTER`), boot a raw binary `.oa32` disk image streamed directly into SRAM over `UART0` (`1`), write a raw binary `.oa32` disk image received over `UART0` to an SD card (`2`), or run the built-in hardware demo (`3`).
+   * Perform the SD SPI initialization handshake, read and validate the packed 32-byte `"OA32"` **Boot Image Header**, copy the **Boot Payload** into User SRAM, verify its IEEE **CRC-32** checksum, synchronize the instruction stream (`fence.i`), and jump to the payload's entry point.
 
 ### 3.3 Stable ROM ABI (Application Binary Interface)
 Because software on SD cards is assembled and linked independently of the System ROM, it must be able to call resident BIOS routines without breaking if the System ROM is ever updated or bug-fixed. Oasis32 decouples callers from Flash addresses using a RISC-V **`ecall` trap dispatcher** (`a7` service ID, `a0–a5` arguments, `a0` return value). For the complete privilege, interrupt, and `ecall` runtime contract, see [ExecutionModel.md](ExecutionModel.md).
@@ -89,39 +91,57 @@ The image begins with a **packed 32-byte little-endian Boot Image Header**, foll
 | `0x14` | 12 bytes | `reserved` | Reserved for future header extensions; must be zero (`0x00`) in ABI `0.1.0`. |
 | `0x20` | `payload_size` bytes | `payload` | Raw Stage-2 payload bytes. On SD cards, the first up to 480 bytes share LBA 0 with the header, and subsequent bytes continue contiguously across LBA 1, LBA 2, etc. (trailing bytes in the final 512-byte sector are zero-padded when written). |
 
-### 3.5 Startup Boot Menu & Serial Transfer Workflow
-Because text-mode font rendering on DVI is not yet implemented in the initial System ROM, the startup boot menu operates over the debug serial port (`UART0`, 115,200 baud 8N1). Once DVI text-mode rendering is added later, the same menu workflow will transition to the DVI display.
+### 3.5 Startup Sequence, Boot Menu & Serial Transfer Workflow
+The startup splash and interactive boot menu render directly on the 640×480 / 80×60 DVI display using the resident `BIOS_BLK_TEXT` and `BIOS_BLK_INPUT` (CH9350 USB keyboard) services, while raw `.oa32` disk image transfers (`1` and `2`) stream over the debug serial port (`UART0`, 115,200 baud 8N1).
 
-On power-up or reset, after completing hardware initialization (POST), the System ROM prints a splash message followed by the boot menu:
+#### Startup Splash & Automatic SD Boot
+On power-up or reset, after completing hardware initialization (POST):
+1. **Splash Screen:** The System ROM copies the embedded 640×480 splash bitmap into `FRAMEBUF` with a 5-pixel white outer border `(0,0)–(639,479)` (critical for reliable DVI monitor and capture-card active-frame lock-on), plays the startup tune on the piezo buzzer, holds the splash for 3 seconds, and clears `FRAMEBUF`.
+2. **Automatic Boot Attempt:** Immediately after the splash screen, the System ROM checks SD card presence via `GP6` (`CD`).
+   * If a disk is inserted, it initializes the card over `SPI0`, reads LBA 0, and validates the 32-byte `"OA32"` Boot Image Header (`magic`, `load_addr`, `entry_addr`, and `payload_size` bounds within User SRAM).
+   * If the header is valid, the System ROM **immediately attempts to boot from the SD card** (copying the payload to `load_addr`, verifying `crc32`, executing `fence.i`, and jumping to `entry_addr`) without stopping at the menu.
+   * If no disk is inserted, if the header is invalid, or if the automatic boot attempt fails (e.g., SD I/O error or CRC-32 mismatch), the System ROM falls through to the interactive boot menu.
+
+#### Interactive Boot Menu & Live Disk Polling
+When the boot menu is active, the System ROM displays the ROM version banner and four options on the 80×60 DVI text console:
 
 ```text
- - ENTER to boot from SD Card
- - 1 to boot from disk image read from serial
- - 2 to write disk image read from serial
- - 3 to run a hardware demo
+  [ENTER]  Boot from SD Card
+  [1]      Boot from disk image read from serial
+  [2]      Write disk image read from serial to SD Card
+  [3]      Run built-in hardware demo
 ```
+
+While waiting for keyboard input, the menu loop **frequently polls SD card presence (`GP6`)** and dynamically updates the menu display and option availability according to the current disk state:
+
+| Disk State | `[ENTER]` Boot from SD Card | `[2]` Write Disk Image from Serial | Polling & Re-Evaluation Behavior |
+|:---|:---|:---|:---|
+| **No disk inserted** | Shown with `[disabled, no disk inserted]`; **disabled** (key ignored) | Shown with `[disabled, no disk inserted]`; **disabled** (key ignored) | Polls `GP6` frequently. As soon as a card is inserted, initializes the card, validates LBA 0's `"OA32"` header, and redraws the menu into one of the two inserted states below. |
+| **Disk inserted, invalid header** | Shown with `[disabled, not a valid OA32 header]`; **disabled** (key ignored) | **Enabled** (no disabled suffix—allows writing a valid image onto a blank or non-OA32 card) | Polls `GP6` regularly, but **does not re-read LBA 0 while the card remains seated** (an invalid header will not change while sitting idle). Only updates if the disk is removed (or upon returning to the menu after option `2` writes a new image). |
+| **Disk inserted, valid `"OA32"` header** | **Enabled** (no disabled suffix) | **Enabled** (no disabled suffix) | Polls `GP6` regularly; if the disk is removed, immediately redraws the menu into the *No disk inserted* state. |
 
 #### Menu Options
 * **`ENTER` — Boot from SD Card:**
-  * Checks SD card presence via `GP6` (`CD`). If no card is inserted, prints `"Insert boot disk"` and waits until a card is inserted.
-  * Initializes the SD card over `SPI0`, reads LBA 0, and validates the 32-byte `"OA32"` header (`magic`, `load_addr`, `entry_addr`, and `payload_size` bounds within User SRAM).
-  * Copies the payload bytes (starting at byte offset `32` of LBA 0, then continuing across LBA 1..N) to `load_addr`, verifies the payload against `crc32`, executes `fence.i`, and jumps to `entry_addr`.
+  * Enabled only when a disk with a valid `"OA32"` header is inserted (otherwise disabled with `[disabled, no disk inserted]` or `[disabled, not a valid OA32 header]`).
+  * Reads the payload bytes from the SD card (starting at byte offset `32` of LBA 0, then continuing across LBA 1..N) into `load_addr`, verifies the payload against `crc32`, executes `fence.i`, and jumps to `entry_addr`.
 * **`1` — Boot from Disk Image Read from Serial (RAM-Only):**
-  * Reads a raw binary `.oa32` disk image from `UART0` (reading the 32-byte header first to validate `magic` and bounds and learn `payload_size`, then streaming `payload_size` raw bytes directly into `load_addr` in User SRAM **without writing to the SD card**).
+  * Always enabled regardless of SD card state.
+  * Prints `"Boot from serial: Transmit .oa32 file to boot from"` over `UART0`, then reads a raw binary `.oa32` disk image from `UART0` (reading the 32-byte header first to validate `magic` and bounds and learn `payload_size`, then streaming `payload_size` raw bytes directly into `load_addr` in User SRAM **without writing to the SD card**).
   * Supports cancelling before the first byte arrives (`ESC` / `Ctrl-C`, which never collides with byte 0 `'O'` = `0x4F`) and a mid-transfer stall timeout if the host stops sending mid-image.
   * Verifies the received payload against `crc32`, executes `fence.i`, and jumps to `entry_addr`.
   * Supports rapid host-to-target edit-assemble-test iteration with zero SD card swapping or wear.
 * **`2` — Write Disk Image Read from Serial to SD Card:**
-  * Checks SD card presence via `GP6` (`CD`). If no card is inserted, prints `"Insert disk to write"` and waits until a card is inserted.
-  * Reads the raw binary `.oa32` disk image from `UART0` into a **User SRAM staging buffer first**, validates the 32-byte `"OA32"` header and verifies `crc32`, and only then writes the raw image (header + payload, zero-padding the tail of the final 512-byte sector) to the SD card starting at LBA 0.
+  * Enabled whenever an SD card is inserted, regardless of whether its current LBA 0 header is valid (disabled with `[disabled, no disk inserted]` when no card is present).
+  * Prints `"Write SD card from serial: Transmit .oa32 file to write"` over `UART0`, then reads the raw binary `.oa32` disk image from `UART0` into a **User SRAM staging buffer first**, validates the 32-byte `"OA32"` header and verifies `crc32`, and only then writes the raw image (header + payload, zero-padding the tail of the final 512-byte sector) to the SD card starting at LBA 0.
   * *Why buffer in SRAM first?* `UART0` has no hardware flow control (`CTS`/`RTS`) and only a 32-byte RX FIFO, whereas an SD card flash write (`CMD24`) can stall for 10–250 ms. Buffering the complete image in User SRAM before touching the SD card completely eliminates UART FIFO overrun risk for all bootable images that fit in User SRAM.
-  * Once the write completes, returns to the boot menu (or equivalently resets).
+  * Once the write completes, returns to the boot menu (re-evaluating the card's header so `[ENTER]` becomes enabled for the newly written disk) or equivalently resets.
 * **`3` — Run Built-In Hardware Demo:**
+  * Always enabled regardless of SD card state.
   * Launches the Flash-resident hardware demo (`hardware_demo`), which exercises all hardware subsystems (serial, timer, LEDs, piezo buzzer, keyboard/mouse, SD card, and DVI video) strictly through the public BIOS `ecall` ABI (`include/abi/`).
   * Provides rapid on-device diagnostics and regression testing of every BIOS subsystem without requiring an SD card or serial transfer—particularly useful during BIOS cleanups and refactorings. Runs until Reset.
 
 #### Validation & Error Recovery
-If any boot or transfer path encounters an error—such as an invalid `"OA32"` magic number, a `load_addr`/`entry_addr`/`payload_size` outside User SRAM, a CRC-32 mismatch, a serial transfer timeout, or an SD I/O failure—the System ROM prints a descriptive error message and returns to the boot menu.
+If any boot or transfer path—including post-splash automatic SD boot—encounters an error (such as an invalid `"OA32"` magic number, a `load_addr`/`entry_addr`/`payload_size` outside User SRAM, a CRC-32 mismatch, a serial transfer timeout, or an SD I/O failure), the System ROM prints a descriptive error message and returns to the boot menu.
 
 ### 3.6 Bootable Disk Images / Stage-2 Payloads
 Any software written to an SD card—ranging from tiny standalone graphics demos and games to a full operating system kernel, filesystem, and interactive shell.
