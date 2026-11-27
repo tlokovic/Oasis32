@@ -87,6 +87,7 @@ trap_sync_entry:
      *   0x50:      Timer Services (TIMER0 1 us monotonic clock)
      *   0x60:      Audio Services (Piezo Buzzer)
      *   0x70-0x71: Status LED Services (Red/Green/Blue)
+     *   0x80-0x87: Text Console & Hardware Cursor Services (80x60 TEXT_BUF)
      * ------------------------------------------------------------------------ */
     li      t0, BIOS_SYS_VERSION
     beq     a7, t0, svc_sys_version
@@ -150,6 +151,22 @@ trap_sync_entry:
     beq     a7, t0, svc_led_write
     li      t0, BIOS_LED_READ
     beq     a7, t0, svc_led_read
+    li      t0, BIOS_TEXT_CLEAR
+    beq     a7, t0, svc_text_clear
+    li      t0, BIOS_TEXT_PUTC
+    beq     a7, t0, svc_text_putc
+    li      t0, BIOS_TEXT_PUTS
+    beq     a7, t0, svc_text_puts
+    li      t0, BIOS_TEXT_SET_CURSOR_POS
+    beq     a7, t0, svc_text_set_cursor_pos
+    li      t0, BIOS_TEXT_GET_CURSOR_POS
+    beq     a7, t0, svc_text_get_cursor_pos
+    li      t0, BIOS_TEXT_SET_CURSOR_STATE
+    beq     a7, t0, svc_text_set_cursor_state
+    li      t0, BIOS_TEXT_SCROLL_UP
+    beq     a7, t0, svc_text_scroll_up
+    li      t0, BIOS_TEXT_SCROLL_DOWN
+    beq     a7, t0, svc_text_scroll_down
 
     li      a0, ERR_UNSUPPORTED
     j       ecall_return
@@ -277,6 +294,38 @@ svc_led_write:
 
 svc_led_read:
     call    led_read
+    j       ecall_return
+
+svc_text_clear:
+    call    text_clear
+    j       ecall_return
+
+svc_text_putc:
+    call    text_putc
+    j       ecall_return
+
+svc_text_puts:
+    call    text_puts
+    j       ecall_return
+
+svc_text_set_cursor_pos:
+    call    text_set_cursor_pos
+    j       ecall_return
+
+svc_text_get_cursor_pos:
+    call    text_get_cursor_pos
+    j       ecall_return
+
+svc_text_set_cursor_state:
+    call    text_set_cursor_state
+    j       ecall_return
+
+svc_text_scroll_up:
+    call    text_scroll_up
+    j       ecall_return
+
+svc_text_scroll_down:
+    call    text_scroll_down
     j       ecall_return
 
 ecall_os_extension:

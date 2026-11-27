@@ -45,6 +45,10 @@
 #define CMD_VACTIVE_PRE_OFF         0x30    /* 7 words (28 B) */
 #define CMD_BEHIND_LIST_OFF         0x50    /* 17 B: enabled BEHIND_TEXT=1 slot offs + 0xFF */
 #define CMD_FRONT_LIST_OFF          0x74    /* 17 B: enabled BEHIND_TEXT=0 slot offs + 0xFF */
+#define CMD_CURSOR_ROW_OFF          0x88    /* int32_t active text row (0..59) or -1 */
+#define CMD_CURSOR_COL_OFF          0x8C    /* uint32_t active text col (0..79) */
+#define CMD_CURSOR_PHASE_OFF        0x90    /* uint32_t blink phase (0=on, 1=off) */
+#define CMD_CURSOR_CNT_OFF          0x94    /* uint32_t blink frame counter */
 #define CMD_LIST_TOTAL_WORDS        19      /* 76 bytes of Flash DMA cmd lists */
 #define SPR_LIST_END                0xFF    /* Sentinel terminating Bank 9 sprite lists */
 
@@ -318,6 +322,13 @@ core1_video_entry:
     sb      t0, CMD_BEHIND_LIST_OFF(s5)
     sb      t0, CMD_FRONT_LIST_OFF(s5)
 
+    /* Initialize Bank 9 latched hardware text cursor state (hidden) */
+    li      t0, -1
+    sw      t0, CMD_CURSOR_ROW_OFF(s5)
+    sw      zero, CMD_CURSOR_COL_OFF(s5)
+    sw      zero, CMD_CURSOR_PHASE_OFF(s5)
+    sw      zero, CMD_CURSOR_CNT_OFF(s5)
+
     /* Initialize steady-state scanline registers */
     li      s1, 0                       /* dma_pong_next = 0 (CH0 finishes first) */
     li      s2, 2                       /* v_scanline = 2 (lines 0 & 1 pre-loaded) */
@@ -465,6 +476,17 @@ compose_text_next4:
     addi    a3, a3, 4
     bltu    a3, a4, compose_text_word_loop
 
+    /* Layer 3b: Non-destructive hardware text cursor inversion (^ 0xFF) */
+    srli    t0, a5, 3                       /* text_row = y >> 3 (0..59) */
+    lw      t1, CMD_CURSOR_ROW_OFF(s5)      /* latched cursor row or -1 */
+    bne     t0, t1, compose_cursor_done
+    lw      t2, CMD_CURSOR_COL_OFF(s5)      /* latched cursor col (0..79) */
+    add     t2, s4, t2                      /* &line_buf[cursor_col] */
+    lbu     t3, 0(t2)
+    xori    t3, t3, 0xFF
+    sb      t3, 0(t2)
+compose_cursor_done:
+
     /* Layer 4: In-front sprites (BEHIND_TEXT = 0, Slot 15 -> Slot 0) */
     mv      a0, a5                          /* y */
     mv      a1, s4                          /* line_buf */
@@ -529,6 +551,54 @@ line_vblank_off:
 .p2align 2
 .type core1_vblank_latch_oam, @function
 core1_vblank_latch_oam:
+    /* Latch packed cursor state [blink:8 | vis:8 | row:8 | col:8] from USB DPRAM
+     * and advance 60 Hz blink phase once per frame during VBLANK. */
+    li      t0, BIOS_CURSOR_STATE_ADDR
+    lw      t1, 0(t0)
+    srli    t2, t1, 16
+    andi    t2, t2, 0xFF                    /* t2 = visible */
+    beqz    t2, cursor_latch_hidden
+
+    andi    t3, t1, 0xFF                    /* t3 = col (0..79) */
+    srli    t4, t1, 8
+    andi    t4, t4, 0xFF                    /* t4 = row (0..59) */
+    srli    t5, t1, 24                      /* t5 = blink_frames (0..255) */
+    beqz    t5, cursor_latch_solid
+
+    /* Blinking cursor: show when phase == 0, then advance frame counter */
+    lw      t0, CMD_CURSOR_PHASE_OFF(s5)
+    bnez    t0, cursor_latch_blink_off
+    sw      t4, CMD_CURSOR_ROW_OFF(s5)
+    sw      t3, CMD_CURSOR_COL_OFF(s5)
+    j       cursor_latch_step_cnt
+cursor_latch_blink_off:
+    li      t2, -1
+    sw      t2, CMD_CURSOR_ROW_OFF(s5)
+cursor_latch_step_cnt:
+    lw      t2, CMD_CURSOR_CNT_OFF(s5)
+    addi    t2, t2, 1
+    bltu    t2, t5, 9f
+    li      t2, 0
+    xori    t0, t0, 1
+    sw      t0, CMD_CURSOR_PHASE_OFF(s5)
+9:
+    sw      t2, CMD_CURSOR_CNT_OFF(s5)
+    j       cursor_latch_done
+
+cursor_latch_solid:
+    sw      t4, CMD_CURSOR_ROW_OFF(s5)
+    sw      t3, CMD_CURSOR_COL_OFF(s5)
+    sw      zero, CMD_CURSOR_PHASE_OFF(s5)
+    sw      zero, CMD_CURSOR_CNT_OFF(s5)
+    j       cursor_latch_done
+
+cursor_latch_hidden:
+    li      t2, -1
+    sw      t2, CMD_CURSOR_ROW_OFF(s5)
+    sw      zero, CMD_CURSOR_PHASE_OFF(s5)
+    sw      zero, CMD_CURSOR_CNT_OFF(s5)
+
+cursor_latch_done:
     li      t0, VIDEO_CTRL_BASE
     lw      t1, VIDEO_CTRL_FLAGS_OFF(t0)
     andi    t1, t1, VIDEO_CTRL_LATCH_OAM_BIT

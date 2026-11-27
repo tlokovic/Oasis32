@@ -58,9 +58,7 @@
 
 /* Named slots inside BIOS_VIDEO_SYNC_BASE (0x50100500) */
 #define BIOS_VSYNC_COUNT_ADDR       0x50100500  /* uint32_t monotonic frame count */
-/* Planned (BIOS_BLK_TEXT): 0x50100504 uint32_t packed cursor state
- *   [blink_frames:8 | visible:8 | row:8 | col:8] — single-word atomic sw/lw
- *   between Core 0 (BIOS_TEXT_* syscalls) and Core 1 (VBLANK latch). */
+#define BIOS_CURSOR_STATE_ADDR      0x50100504  /* uint32_t [blink:8|vis:8|row:8|col:8] */
 
 /* Named slots inside BIOS_MISC_STATE_BASE (0x50100540) */
 #define BIOS_OS_ECALL_HANDLER_ADDR  0x50100540  /* uint32_t fn ptr (0 = none) */

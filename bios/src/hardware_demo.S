@@ -200,6 +200,16 @@ hardware_demo:
     la      a2, str_bounce_text
     call    demo_text_write
 
+    /* Enable hardware text cursor at (0, 0), blinking every 30 frames */
+    li      a0, 0
+    li      a1, 0
+    li      a7, BIOS_TEXT_SET_CURSOR_POS
+    ecall
+    li      a0, 1
+    li      a1, 30
+    li      a7, BIOS_TEXT_SET_CURSOR_STATE
+    ecall
+
     /* Initialize 16x16 'R' pattern (pat 0) and all 16 harmonic test sprites */
     addi    a0, sp, STK_SPR_DY
     call    demo_sprites_init
@@ -274,7 +284,10 @@ poll_kbd_loop:
     li      a7, BIOS_KEYBOARD_TRY_READ
     ecall
     bltz    a0, poll_mouse_pos_loop
+    mv      s0, a0                      /* Preserve key_event across serial log */
     call    demo_log_kbd_event
+    mv      a0, s0
+    call    demo_handle_kbd_text
     j       poll_kbd_loop
 
 poll_mouse_pos_loop:
@@ -1201,6 +1214,169 @@ demo_log_kbd_event:
 .size demo_log_kbd_event, . - demo_log_kbd_event
 
 /* ----------------------------------------------------------------------------
+ * demo_handle_kbd_text(a0 = packed key_event):
+ *   Processes key-down events for the BIOS_BLK_TEXT console & cursor demo:
+ *     - Printable ASCII keys -> BIOS_TEXT_PUTC at current cursor location
+ *     - Enter (0x28 / 0x58)  -> BIOS_TEXT_PUTC('\n') (start of next line)
+ *     - Backspace (0x2A)     -> BIOS_TEXT_PUTC('\b')
+ *     - Arrow keys (0x4F..0x52): move cursor with edge wrapping & scrolling
+ *       * Off right  -> start of next line (scroll up if off bottom)
+ *       * Off left   -> end of previous line (scroll down if off top)
+ *       * Off bottom -> scroll up, stay on row 59
+ *       * Off top    -> scroll down, stay on row 0
+ * ---------------------------------------------------------------------------- */
+.type demo_handle_kbd_text, @function
+demo_handle_kbd_text:
+    /* Ignore key-up events */
+    li      t0, KEY_EVENT_DOWN_BIT
+    and     t0, a0, t0
+    beqz    t0, kbd_text_fast_ret
+
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s0, 8(sp)
+
+    andi    t1, a0, KEY_EVENT_CODE_MASK /* t1 = USB HID keycode */
+    srli    t2, a0, KEY_EVENT_MOD_SHIFT
+    andi    t2, t2, 0xFF                /* t2 = modifiers */
+
+    /* Enter (0x28) or Keypad Enter (0x58) -> '\n' */
+    li      t0, 0x28
+    beq     t1, t0, kbd_do_enter
+    li      t0, 0x58
+    beq     t1, t0, kbd_do_enter
+
+    /* Backspace (0x2A) -> '\b' */
+    li      t0, 0x2A
+    beq     t1, t0, kbd_do_bs
+
+    /* Cursor Arrow Keys (USB HID Usage Page 0x07: 0x4F..0x52) */
+    li      t0, 0x4F                    /* Right Arrow */
+    beq     t1, t0, kbd_cur_right
+    li      t0, 0x50                    /* Left Arrow */
+    beq     t1, t0, kbd_cur_left
+    li      t0, 0x51                    /* Down Arrow */
+    beq     t1, t0, kbd_cur_down
+    li      t0, 0x52                    /* Up Arrow */
+    beq     t1, t0, kbd_cur_up
+
+    /* Main printable block: 0x04..0x38 */
+    li      t0, 0x04
+    bltu    t1, t0, kbd_text_done
+    li      t0, 0x38
+    bgtu    t1, t0, kbd_check_keypad
+
+    addi    t1, t1, -0x04
+    andi    t2, t2, (KEY_MOD_LSHIFT | KEY_MOD_RSHIFT)
+    la      t0, hid_ascii_normal
+    beqz    t2, 1f
+    la      t0, hid_ascii_shift
+1:
+    add     t0, t0, t1
+    lbu     a0, 0(t0)
+    beqz    a0, kbd_text_done
+    li      a7, BIOS_TEXT_PUTC
+    ecall
+    j       kbd_text_done
+
+kbd_check_keypad:
+    /* Keypad printable block: 0x54..0x63 */
+    li      t0, 0x54
+    bltu    t1, t0, kbd_text_done
+    li      t0, 0x63
+    bgtu    t1, t0, kbd_text_done
+    addi    t1, t1, -0x54
+    la      t0, hid_keypad_ascii
+    add     t0, t0, t1
+    lbu     a0, 0(t0)
+    beqz    a0, kbd_text_done
+    li      a7, BIOS_TEXT_PUTC
+    ecall
+    j       kbd_text_done
+
+kbd_do_enter:
+    li      a0, '\n'
+    li      a7, BIOS_TEXT_PUTC
+    ecall
+    j       kbd_text_done
+
+kbd_do_bs:
+    li      a0, '\b'
+    li      a7, BIOS_TEXT_PUTC
+    ecall
+    j       kbd_text_done
+
+kbd_cur_right:
+    li      a7, BIOS_TEXT_GET_CURSOR_POS
+    ecall
+    addi    a0, a0, 1
+    li      t0, VIDEO_TEXT_COLS
+    bltu    a0, t0, kbd_set_cursor
+    li      a0, 0
+    addi    a1, a1, 1
+    li      t0, VIDEO_TEXT_ROWS
+    bltu    a1, t0, kbd_set_cursor
+    li      a0, 1
+    li      a7, BIOS_TEXT_SCROLL_UP
+    ecall
+    li      a0, 0
+    li      a1, (VIDEO_TEXT_ROWS - 1)
+    j       kbd_set_cursor
+
+kbd_cur_left:
+    li      a7, BIOS_TEXT_GET_CURSOR_POS
+    ecall
+    addi    a0, a0, -1
+    bgez    a0, kbd_set_cursor
+    li      a0, (VIDEO_TEXT_COLS - 1)
+    addi    a1, a1, -1
+    bgez    a1, kbd_set_cursor
+    li      a0, 1
+    li      a7, BIOS_TEXT_SCROLL_DOWN
+    ecall
+    li      a0, (VIDEO_TEXT_COLS - 1)
+    li      a1, 0
+    j       kbd_set_cursor
+
+kbd_cur_down:
+    li      a7, BIOS_TEXT_GET_CURSOR_POS
+    ecall
+    addi    a1, a1, 1
+    li      t0, VIDEO_TEXT_ROWS
+    bltu    a1, t0, kbd_set_cursor
+    mv      s0, a0                      /* Preserve col across scroll */
+    li      a0, 1
+    li      a7, BIOS_TEXT_SCROLL_UP
+    ecall
+    mv      a0, s0
+    li      a1, (VIDEO_TEXT_ROWS - 1)
+    j       kbd_set_cursor
+
+kbd_cur_up:
+    li      a7, BIOS_TEXT_GET_CURSOR_POS
+    ecall
+    addi    a1, a1, -1
+    bgez    a1, kbd_set_cursor
+    mv      s0, a0                      /* Preserve col across scroll */
+    li      a0, 1
+    li      a7, BIOS_TEXT_SCROLL_DOWN
+    ecall
+    mv      a0, s0
+    li      a1, 0
+
+kbd_set_cursor:
+    li      a7, BIOS_TEXT_SET_CURSOR_POS
+    ecall
+
+kbd_text_done:
+    lw      s0, 8(sp)
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+kbd_text_fast_ret:
+    ret
+.size demo_handle_kbd_text, . - demo_handle_kbd_text
+
+/* ----------------------------------------------------------------------------
  * demo_log_mouse_pos(a1=x, a2=y, a3=dx, a4=dy, a5=dwheel):
  *   Prints "[MOUSE] pos=(X,Y) d=(dx,dy) w=dw\r\n"
  * ---------------------------------------------------------------------------- */
@@ -1417,3 +1593,23 @@ str_sd_wr_fail:
     .asciz "[SD] WRITE FAIL\r\n"
 str_sd_rd_fail:
     .asciz "[SD] READ FAIL\r\n"
+
+/* USB HID Usage Page 0x07 -> ASCII lookup tables (codes 0x04..0x38, 53 bytes) */
+hid_ascii_normal:
+    .byte 'a','b','c','d','e','f','g','h','i','j','k','l','m'
+    .byte 'n','o','p','q','r','s','t','u','v','w','x','y','z'
+    .byte '1','2','3','4','5','6','7','8','9','0'
+    .byte 0, 0, 0, 0, ' '               /* 0x28..0x2C: Enter, Esc, BS, Tab, Space */
+    .byte '-','=','[',']','\\','#',';','\'','`',',','.','/'
+
+hid_ascii_shift:
+    .byte 'A','B','C','D','E','F','G','H','I','J','K','L','M'
+    .byte 'N','O','P','Q','R','S','T','U','V','W','X','Y','Z'
+    .byte '!','@','#','$','%','^','&','*','(',')'
+    .byte 0, 0, 0, 0, ' '               /* 0x28..0x2C: Enter, Esc, BS, Tab, Space */
+    .byte '_','+','{','}','|','~',':','"','~','<','>','?'
+
+/* USB HID Keypad printable codes (0x54..0x63, 16 bytes) */
+hid_keypad_ascii:
+    .byte '/','*','-','+',0             /* 0x54..0x58: /, *, -, +, KP Enter */
+    .byte '1','2','3','4','5','6','7','8','9','0','.'
