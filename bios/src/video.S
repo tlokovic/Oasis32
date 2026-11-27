@@ -261,7 +261,7 @@ core1_video_entry:
     li      t1, HSTX_LANE1_N
     sw      t1, HSTX_BIT7_OFF(t0)
 
-    /* 3. Mux GP12-GP19 to HSTX (FUNCSEL=0), clear ISO & OD, set SLEWFAST
+    /* 3. Mux GP12-GP19 to HSTX (FUNCSEL=0), clear ISO & OD, set 12 mA drive + SLEWFAST
      *    while HSTX_CSR is still disabled so all 4 TMDS differential pairs
      *    start toggling simultaneously on the exact same clock edge. */
     li      t1, IO_BANK0_BASE + IO_DVI_BASE_CTRL_OFF
@@ -269,7 +269,7 @@ core1_video_entry:
     li      t3, PADS_BANK0_BASE + ATOMIC_SET + PADS_DVI_BASE_OFF
     li      t4, 8
     li      t5, PADS_ISO_OD_MASK
-    li      t6, PADS_SLEWFAST_BIT
+    li      t6, (PADS_DRIVE_12MA_BITS | PADS_SLEWFAST_BIT)
 2:
     sw      zero, 0(t1)
     sw      t5, 0(t2)

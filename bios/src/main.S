@@ -14,16 +14,54 @@
  * ============================================================================
  */
 
+#include "abi/memory_map.h"
 #include "abi/bios_abi.h"
 #include "abi/devices.h"
 #include "abi/keycodes.h"
+
+#define BOOT_SPLASH_WAIT_US         3000000 /* 3 s splash hold after tune */
+#define BOOT_SPLASH_COL             36      /* (80 - 7) / 2 */
+#define BOOT_SPLASH_ROW             29      /* ~60 / 2 */
 
 .section .text, "ax"
 
 .global bios_main
 .type bios_main, @function
 bios_main:
+    /* Startup splash: 1-px outer border + centered "Oasis32" during tune & 3 s hold */
+    li      a0, 0
+    li      a1, 0
+    li      a7, BIOS_TEXT_SET_CURSOR_STATE
+    ecall
+
+    li      a7, BIOS_TEXT_CLEAR
+    ecall
+
+    call    boot_draw_border
+
+    li      a0, BOOT_SPLASH_COL
+    li      a1, BOOT_SPLASH_ROW
+    li      a7, BIOS_TEXT_SET_CURSOR_POS
+    ecall
+
+    la      a0, str_splash_title
+    call    boot_text_puts
+
     call    play_startup_tune
+
+    /* Hold splash for 3 seconds so displays/capture adapters lock cleanly */
+    li      a7, BIOS_TIME_US
+    ecall
+    mv      s0, a0                      /* s0 = start_us */
+    li      s1, BOOT_SPLASH_WAIT_US
+1:
+    li      a7, BIOS_TIME_US
+    ecall
+    sub     t0, a0, s0
+    bltu    t0, s1, 1b
+
+    /* Clear border from framebuffer before entering the clean boot menu */
+    call    boot_clear_framebuf
 
 boot_menu_draw:
     /* Clear text overlay, hide cursor while drawing, flush stale key events */
@@ -192,7 +230,55 @@ boot_text_print_u8_dec:
     ret
 .size boot_text_print_u8_dec, . - boot_text_print_u8_dec
 
+/* ----------------------------------------------------------------------------
+ * boot_draw_border():
+ *   Draws a 1-pixel white outer border (0,0)-(639,479) in VIDEO_FRAMEBUF_BASE.
+ * ---------------------------------------------------------------------------- */
+.type boot_draw_border, @function
+boot_draw_border:
+    li      t0, VIDEO_FRAMEBUF_BASE
+    li      t1, VIDEO_FRAMEBUF_BASE + ((VIDEO_HEIGHT - 1) * VIDEO_STRIDE_BYTES)
+    li      t2, VIDEO_STRIDE_WORDS
+    li      t3, -1
+1:
+    sw      t3, 0(t0)
+    sw      t3, 0(t1)
+    addi    t0, t0, 4
+    addi    t1, t1, 4
+    addi    t2, t2, -1
+    bnez    t2, 1b
+
+    li      t0, VIDEO_FRAMEBUF_BASE + VIDEO_STRIDE_BYTES
+    li      t1, VIDEO_FRAMEBUF_BASE + ((VIDEO_HEIGHT - 1) * VIDEO_STRIDE_BYTES)
+    li      t2, 0x01
+    li      t3, 0x80
+2:
+    sb      t2, 0(t0)
+    sb      t3, (VIDEO_STRIDE_BYTES - 1)(t0)
+    addi    t0, t0, VIDEO_STRIDE_BYTES
+    bltu    t0, t1, 2b
+    ret
+.size boot_draw_border, . - boot_draw_border
+
+/* ----------------------------------------------------------------------------
+ * boot_clear_framebuf():
+ *   Zero-fills VIDEO_FRAMEBUF_BASE (38,400 bytes).
+ * ---------------------------------------------------------------------------- */
+.type boot_clear_framebuf, @function
+boot_clear_framebuf:
+    li      t0, VIDEO_FRAMEBUF_BASE
+    li      t1, VIDEO_FRAMEBUF_BASE + VIDEO_FRAMEBUF_SIZE
+1:
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t1, 1b
+    ret
+.size boot_clear_framebuf, . - boot_clear_framebuf
+
 .section .rodata
+
+str_splash_title:
+    .asciz  "Oasis32"
 
 str_menu_top:
     .asciz  "\n  ============================================================================\n    Oasis32 System ROM v"

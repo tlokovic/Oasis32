@@ -133,6 +133,7 @@
 #define PADS_ISO_BIT                (1 << 8)    /* Resets to 1 on RP2350! */
 #define PADS_OD_BIT                 (1 << 7)
 #define PADS_IE_BIT                 (1 << 6)
+#define PADS_DRIVE_12MA_BITS        (3 << 4)    /* DRIVE[5:4] = 0b11 (12 mA, §9.11.3 p. 707) */
 #define PADS_PUE_BIT                (1 << 3)
 #define PADS_PDE_BIT                (1 << 2)
 #define PADS_SLEWFAST_BIT           (1 << 0)
