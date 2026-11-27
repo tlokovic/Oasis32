@@ -161,9 +161,9 @@ function(oasis32_add_disk_executable TARGET_NAME)
         LINK_DEPENDS "${_disk_ld}"
     )
 
-    # Declared Oasis32 unprivileged RISC-V ISA (no vendor Xh3* extensions).
+    # Declared Oasis32 unprivileged RISC-V ISA (no CSR or vendor Xh3* extensions).
     target_compile_options(${TARGET_NAME} PRIVATE
-        -march=rv32imac_zicsr_zifencei
+        -march=rv32imac_zifencei
         -mabi=ilp32
         -g
     )
