@@ -20,15 +20,13 @@
 #include "abi/keycodes.h"
 
 #define BOOT_SPLASH_WAIT_US         3000000 /* 3 s splash hold after tune */
-#define BOOT_SPLASH_COL             36      /* (80 - 7) / 2 */
-#define BOOT_SPLASH_ROW             29      /* ~60 / 2 */
 
 .section .text, "ax"
 
 .global bios_main
 .type bios_main, @function
 bios_main:
-    /* Startup splash: 1-px outer border + centered "Oasis32" during tune & 3 s hold */
+    /* Startup splash: display embedded 640x480 bitmap, play tune, hold 3 s */
     li      a0, 0
     li      a1, 0
     li      a7, BIOS_TEXT_SET_CURSOR_STATE
@@ -37,15 +35,7 @@ bios_main:
     li      a7, BIOS_TEXT_CLEAR
     ecall
 
-    call    boot_draw_border
-
-    li      a0, BOOT_SPLASH_COL
-    li      a1, BOOT_SPLASH_ROW
-    li      a7, BIOS_TEXT_SET_CURSOR_POS
-    ecall
-
-    la      a0, str_splash_title
-    call    boot_text_puts
+    call    boot_draw_splash
 
     call    play_startup_tune
 
@@ -60,7 +50,7 @@ bios_main:
     sub     t0, a0, s0
     bltu    t0, s1, 1b
 
-    /* Clear border from framebuffer before entering the clean boot menu */
+    /* Clear splash bitmap from framebuffer before entering the boot menu */
     call    boot_clear_framebuf
 
 boot_menu_draw:
@@ -231,34 +221,56 @@ boot_text_print_u8_dec:
 .size boot_text_print_u8_dec, . - boot_text_print_u8_dec
 
 /* ----------------------------------------------------------------------------
- * boot_draw_border():
- *   Draws a 1-pixel white outer border (0,0)-(639,479) in VIDEO_FRAMEBUF_BASE.
+ * boot_draw_splash():
+ *   Copies the 38,400-byte (9,600-word) Flash-resident splash bitmap
+ *   (`bios_splash_fb` from `bios/src/splash.S`) into VIDEO_FRAMEBUF_BASE,
+ *   then overlays a 5-pixel white outer border (0,0)-(639,479) to aid
+ *   DVI monitor/capture-card active-frame lock-on after reset.
  * ---------------------------------------------------------------------------- */
-.type boot_draw_border, @function
-boot_draw_border:
-    li      t0, VIDEO_FRAMEBUF_BASE
-    li      t1, VIDEO_FRAMEBUF_BASE + ((VIDEO_HEIGHT - 1) * VIDEO_STRIDE_BYTES)
-    li      t2, VIDEO_STRIDE_WORDS
-    li      t3, -1
+#define BOOT_SPLASH_BORDER_PX       5
+#define BOOT_SPLASH_BORDER_LEFT     0x1F    /* LSB-left x = 0..4   (bits 0..4) */
+#define BOOT_SPLASH_BORDER_RIGHT    0xF8    /* LSB-left x = 635..639 (bits 3..7) */
+
+.type boot_draw_splash, @function
+boot_draw_splash:
+    /* 1. Copy 38,400-byte splash bitmap from XIP Flash to VIDEO_FRAMEBUF_BASE */
+    la      t0, bios_splash_fb
+    li      t1, VIDEO_FRAMEBUF_BASE
+    li      t2, VIDEO_FRAMEBUF_BASE + VIDEO_FRAMEBUF_SIZE
 1:
+    lw      t3, 0(t0)
+    sw      t3, 0(t1)
+    addi    t0, t0, 4
+    addi    t1, t1, 4
+    bltu    t1, t2, 1b
+
+    /* 2. Top 5 rows (y = 0..4) and bottom 5 rows (y = 475..479): all white */
+    li      t0, VIDEO_FRAMEBUF_BASE
+    li      t1, VIDEO_FRAMEBUF_BASE + ((VIDEO_HEIGHT - BOOT_SPLASH_BORDER_PX) * VIDEO_STRIDE_BYTES)
+    li      t2, BOOT_SPLASH_BORDER_PX * VIDEO_STRIDE_WORDS
+    li      t3, -1
+2:
     sw      t3, 0(t0)
     sw      t3, 0(t1)
     addi    t0, t0, 4
     addi    t1, t1, 4
     addi    t2, t2, -1
-    bnez    t2, 1b
+    bnez    t2, 2b
 
-    li      t0, VIDEO_FRAMEBUF_BASE + VIDEO_STRIDE_BYTES
-    li      t1, VIDEO_FRAMEBUF_BASE + ((VIDEO_HEIGHT - 1) * VIDEO_STRIDE_BYTES)
-    li      t2, 0x01
-    li      t3, 0x80
-2:
+    /* 3. Left 5 px (0x1F) and right 5 px (0xF8) across middle rows (y = 5..474) */
+    li      t0, VIDEO_FRAMEBUF_BASE + (BOOT_SPLASH_BORDER_PX * VIDEO_STRIDE_BYTES)
+    li      t1, VIDEO_FRAMEBUF_BASE + ((VIDEO_HEIGHT - BOOT_SPLASH_BORDER_PX) * VIDEO_STRIDE_BYTES)
+3:
+    lbu     t2, 0(t0)
+    ori     t2, t2, BOOT_SPLASH_BORDER_LEFT
     sb      t2, 0(t0)
-    sb      t3, (VIDEO_STRIDE_BYTES - 1)(t0)
+    lbu     t2, (VIDEO_STRIDE_BYTES - 1)(t0)
+    ori     t2, t2, BOOT_SPLASH_BORDER_RIGHT
+    sb      t2, (VIDEO_STRIDE_BYTES - 1)(t0)
     addi    t0, t0, VIDEO_STRIDE_BYTES
-    bltu    t0, t1, 2b
+    bltu    t0, t1, 3b
     ret
-.size boot_draw_border, . - boot_draw_border
+.size boot_draw_splash, . - boot_draw_splash
 
 /* ----------------------------------------------------------------------------
  * boot_clear_framebuf():
@@ -276,9 +288,6 @@ boot_clear_framebuf:
 .size boot_clear_framebuf, . - boot_clear_framebuf
 
 .section .rodata
-
-str_splash_title:
-    .asciz  "Oasis32"
 
 str_menu_top:
     .asciz  "\n  ============================================================================\n    Oasis32 System ROM v"
