@@ -1,37 +1,186 @@
 # Oasis32 Programmer's Reference
 
-*TODO: Document header/subtitle, target BIOS ABI version (e.g., v0.1.0), and a brief introductory note framing this manual as the single, authoritative, self-contained specification for programming Oasis32.*
+**System Architecture, Memory Map, Video Subsystem & Resident BIOS ABI Specification**
+
+| | |
+|:---|:---|
+| **Target System** | Oasis32 32-bit RISC-V Microcomputer |
+| **Declared ISA** | `RV32IMAC_Zifencei` (32-bit little-endian, nominal 126 MHz) |
+| **Calling Convention** | RISC-V `ILP32` |
+| **BIOS ABI Version** | `0.1.0` (`0x00000100`) |
+
+This manual is the authoritative, self-contained specification for programming the **Oasis32** computer. It defines the machine model, memory map, bootable disk format, video memory layouts, and resident BIOS `ecall` services required to build standalone demos, games, utilities, and complete operating systems from bare-metal RISC-V assembly.
+
+Everything a programmer needs—and is permitted—to rely on is specified within these pages and the accompanying public headers under `include/abi/`. Any hardware or firmware behavior not documented here is an internal implementation detail and must not be depended upon.
 
 ---
 
 ## Preface
 
 ### Purpose, Audience & Scope
-*TODO: Explain who this manual is for (assembly programmers, game/demo authors, and OS developers targeting Oasis32). State the strict **Core Boundary Principle**: this manual defines everything an Oasis32 programmer needs—and is allowed—to know. Underlying silicon, board wiring, and peripheral bridge components are treated strictly as hidden implementation details and are intentionally omitted.*
+
+This manual defines the complete technical contract between Oasis32's resident System ROM (BIOS) and software loaded onto the machine from an SD card or over the serial port.
+
+**Audience.** It is written for programmers building bare-metal RISC-V software for Oasis32—ranging from small graphics demos, games, and hardware utilities to full operating systems, shells, filesystems, and language toolchains. Readers are assumed to be comfortable with basic RISC-V assembly, hexadecimal/binary arithmetic, and memory-mapped data structures.
+
+**Scope.** This document specifies:
+* The programmer-visible CPU architecture, execution rules, and memory map.
+* The bootable disk image format, interactive bootloader user interface, and guaranteed machine state at program entry.
+* The unified 640×480 display memory layouts (bitmap framebuffer, programmable font, text overlay, and hardware sprite engine).
+* The `ecall` calling convention, error codes, OS syscall extension hook, and every resident BIOS service.
+* Practical guidance for cross-compiling Oasis32 software on a host computer and deploying disk images over the serial port.
+* Self-contained reference appendices for keycodes, character sets, BIOS services, and public ABI headers (`include/abi/`).
+
+Internal System ROM implementation details, physical board wiring, and underlying peripheral controller registers are intentionally outside the scope of this manual. Software written strictly against the contracts defined here will remain portable across future System ROM revisions.
 
 ### External References
-*TODO: Define the circumscribed two-document external bookshelf that this manual defers to (and nothing else):*
-1. *RISC-V Unprivileged ISA Specification, scoped strictly to Oasis32's declared ISA string (`RV32IMAC_Zifencei`).*
-2. *RISC-V ELF psABI Specification (`ILP32` calling convention).*
+
+This manual is designed to be self-contained for all Oasis32-specific behavior—including memory layouts, display formats, keycodes, character sets, and BIOS services. For the underlying RISC-V instruction encodings and standard calling conventions, it defers **only** to two standard specifications:
+
+1. **The RISC-V Instruction Set Manual, Volume I: Unprivileged Architecture** — scoped strictly to Oasis32's declared ISA string, **`RV32IMAC_Zifencei`**:
+   * **`RV32I`:** Base 32-bit integer instructions.
+   * **`M`:** Standard integer multiplication and division (`mul`, `div`, `rem`, etc.).
+   * **`A`:** Standard atomic memory instructions (`lr.w`, `sc.w`, `amo*`).
+   * **`C`:** Standard 16-bit compressed instructions.
+   * **`Zifencei`:** Instruction-fetch fence (`fence.i`) for synchronizing dynamically loaded code.
+   * *(Volume II: Privileged Architecture, `Zicsr`, and all vendor-specific extensions are explicitly excluded.)*
+2. **The RISC-V ELF psABI Specification (`ILP32`)** — defines standard ABI register names, caller-saved vs. callee-saved register rules, 16-byte stack alignment, and integer data widths (`int`/`long`/pointer = 32 bits).
 
 ### Document Conventions
-*TODO: Define notation used throughout the manual: little-endian byte order, bit numbering (`bit 0` = LSB), hexadecimal prefixes (`0x`), register ABI names (`a0–a7`, `s0–s11`, `sp`, `ra`, etc.), signed error code conventions, and `[inclusive..inclusive]` vs. `[inclusive, exclusive)` address ranges.*
+
+* **Byte Order & Data Sizes:** Oasis32 is **little-endian** (the least significant byte of a multi-byte value is stored at the lowest memory address). Throughout this manual, a *byte* is 8 bits (`uint8_t`/`int8_t`), a *halfword* is 16 bits (`uint16_t`/`int16_t`), a *word* is 32 bits (`uint32_t`/`int32_t`), and a *doubleword* is 64 bits.
+* **Numeric Notation:** Hexadecimal numbers use the `0x` prefix; underscores (such as `0x2007_4000`) are used in prose and tables for readability and are omitted in assembly/header literals. Binary values use the `0b` prefix. Unprefixed numbers are decimal.
+* **Bit Numbering & Field Notation:** `bit 0` is always the least significant bit (LSB). Multi-bit fields are written `bits [hi:lo]` inclusive (for example, `bits [7:0]` is the low byte of a 32-bit word).
+* **Address & Value Ranges:** Ranges written `A`–`B` or `A..B` are **inclusive** of both endpoints. Half-open intervals written `[A, B)` include `A` and exclude `B`.
+* **Register Names:** General-purpose registers are referred to by their standard RISC-V ABI names (`zero`, `ra`, `sp`, `gp`, `tp`, `t0–t6`, `s0–s11`, `a0–a7`).
+* **BIOS Return Convention:** Every resident BIOS service returns a signed 32-bit integer in `a0` where `a0 >= 0` signals success and `a0 < 0` signals a standardized negative error code (`ERR_*`).
+* **Symbolic Constants:** Identifiers in `ALL_CAPS` (such as `USER_RAM_BASE`, `VIDEO_FRAMEBUF_BASE`, `BIOS_TEXT_PUTC`, or `KEY_ENTER`) correspond verbatim to `#define` constants provided in the public ABI headers under `include/abi/`.
 
 ---
 
 ## 1. System Architecture & Machine Model
 
 ### 1.1 CPU & Instruction Set Architecture
-*TODO: Specify the Oasis32 CPU contract: 32-bit little-endian RISC-V processor running at a nominal 126 MHz clock, single-core and single-threaded execution model, and the exact declared unprivileged ISA string **`RV32IMAC_Zifencei`** (`I` base integer, `M` multiply/divide, `A` atomics, `C` compressed 16-bit instructions, and `Zifencei` for `fence.i` instruction-stream synchronization when loading code into SRAM). Explicitly exclude `Zicsr`, privileged instructions/CSRs, and any vendor-specific extensions—noting that the disk toolchain enforces this mechanically at assemble time.*
+
+Oasis32 presents a **single-core, single-threaded, 32-bit little-endian RISC-V** processor operating in a flat 32-bit physical address space with no virtual memory or address translation.
+
+| Property | Specification |
+|:---|:---|
+| **Word Width & Endianness** | 32-bit (`XLEN = 32`), little-endian |
+| **Execution Model** | Single-core, single-threaded, flat address space |
+| **Nominal System Clock** | `126 MHz` (~`7.94 ns` per cycle) |
+| **Declared ISA String** | `RV32IMAC_Zifencei` |
+| **Calling Convention** | RISC-V `ILP32` (32 general-purpose registers `x0`–`x31`, 16-byte stack alignment) |
+
+#### Supported Extensions (`RV32IMAC_Zifencei`)
+
+| Extension | Scope & Role on Oasis32 |
+|:---|:---|
+| **`RV32I`** | Base 32-bit integer instruction set, including `ecall` for invoking BIOS and OS services. |
+| **`M`** | Hardware integer multiplication and division (`mul`, `mulh*`, `div`, `divu`, `rem`, `remu`). |
+| **`A`** | Standard atomic memory operations (`lr.w`, `sc.w`, `amo*`). |
+| **`C`** | 16-bit compressed instructions for compact code density; instruction addresses are 2-byte aligned. |
+| **`Zifencei`** | Instruction-fetch synchronization (`fence.i`). Required after writing or loading machine code into User SRAM (e.g., by an OS program loader or self-hosted assembler) before jumping to it. |
+
+#### Excluded Instructions & Timing Guidance
+* **Strictly Unprivileged:** `Zicsr` (CSR access instructions), privileged instructions (such as `mret` and `wfi`), floating-point extensions (`F`/`D`), and all vendor-specific extensions are **excluded** from the Oasis32 ISA contract. Oasis32 disk builds targeting `-march=rv32imac_zifencei` enforce this boundary automatically at assemble time.
+* **Timing Independence:** While the processor runs at a nominal `126 MHz`, software should never rely on hand-tuned instruction delay loops for real-time pacing. Use `BIOS_TIME_US` (`0x50`) for microsecond timing and `BIOS_VIDEO_WAIT_VSYNC` (`0x21`) for 60 Hz frame synchronization.
 
 ### 1.2 Hardware Overview (Programmer's View)
-*TODO: Include a high-level ASCII block diagram of the Oasis32 machine as seen by software: 32-bit RISC-V CPU, 464 KB contiguous User SRAM, 48 KB Public Video RAM driving a 640×480 @ 60 Hz monochrome display (bitmap + 80×60 text overlay + 16 hardware sprites), and the BIOS-abstracted peripherals (keyboard, mouse, 512-byte block storage, 115,200 baud serial port, 1 µs monotonic timer, piezo buzzer, and 3 status LEDs).*
+
+From a programmer's perspective, Oasis32 is a clean, self-contained microcomputer with two direct memory regions (User SRAM and Public Video RAM) and a permanent Resident System ROM (BIOS) that abstracts all I/O peripherals behind `ecall`:
+
+```text
+                       ┌────────────────────────────────────┐
+                       │       Oasis32 32-bit CPU           │
+                       │   RV32IMAC_Zifencei @ 126 MHz      │
+                       └────────┬──────────────────┬────────┘
+                                │                  │
+               Direct Load/Store│                  │ ecall (a7 = Service ID)
+                                ▼                  ▼
+┌────────────────────────────────────────┐   ┌──────────────────────────────────┐
+│           512 KB Public SRAM           │   │    Resident System ROM (BIOS)    │
+│                                        │   │                                  │
+│  ┌──────────────────────────────────┐  │   │  • System Control & OS Hook      │
+│  │ User SRAM (464 KB)               │  │   │  • Serial Port                   │
+│  │ 0x2000_0000 – 0x2007_3FFF        │  │   │  • Video Sync & Font Reset       │
+│  │ Code, Data, Heap, Stack          │  │   │  • Text Console & Blink Cursor   │
+│  └──────────────────────────────────┘  │   │  • Keyboard & Mouse (Buffered)   │
+│  ┌──────────────────────────────────┐  │   │  • SD Card Storage (512 B LBA)   │
+│  │ Public Video RAM (48 KB)         │  │   │  • Monotonic 64-bit Timer (1 us) │
+│  │ 0x2007_4000 – 0x2007_FFFF        │──┼──▶│  • Piezo Audio (16–20,000 Hz)    │
+│  │ FRAMEBUF, FONT_RAM, TEXT_BUF,    │  │   │  • Status LEDs (Red/Green/Blue)  │
+│  │ VIDEO_CTRL, SPRITE_OAM/PAT       │  │   └──────────────────────────────────┘
+│  └──────────────────┬───────────────┘  │
+└─────────────────────┼──────────────────┘
+                      │ Autonomous Scanout (Zero CPU Overhead)
+                      ▼
+       ┌──────────────────────────────┐
+       │   640×480 @ 60 Hz Display    │
+       │  Bitmap + 80×60 Text Overlay │
+       │  + 16 Masked 16×16 Sprites   │
+       └──────────────────────────────┘
+```
+
+#### Subsystem Summary
+
+| Subsystem | Capabilities | Access Interface |
+|:---|:---|:---|
+| **User Memory** | `464 KB` contiguous read/write/execute SRAM (`0x2000_0000`–`0x2007_3FFF`). | Direct load/store & instruction fetch |
+| **Display & Sprites** | `640×480 @ 60 Hz` monochrome bitmap, `80×60` OR-composited text overlay, programmable `256`-glyph `8×8` CP437 font, `16` masked `16×16` hardware sprites (`58` patterns). | Direct load/store to Video RAM (`0x2007_4000`–`0x2007_FFFF`) + `BIOS_BLK_VIDEO` (`0x20`) |
+| **Text Console** | Managed `80×60` cursor, character/string output with `\n`/`\r`/`\b`, line wrap, auto-scroll, manual scroll, and non-destructive hardware blinking cursor. | `BIOS_BLK_TEXT` (`0x80`) |
+| **Keyboard** | Interrupt-buffered `32`-event queue, hardware-independent keycodes, modifier tracking, `6`-key state snapshot, US ASCII translation, configurable typematic repeat. | `BIOS_BLK_INPUT` (`0x30`–`0x36`) |
+| **Mouse** | Screen-space tracking (`0..639 × 0..479`), separate `16`-event motion/wheel and button queues, live state snapshot, and coordinate warping. | `BIOS_BLK_INPUT` (`0x38`–`0x3F`) |
+| **Removable Storage** | Raw `512`-byte LBA sector read/write, capacity query, and debounced hot-swap card detection. | `BIOS_BLK_SD` (`0x40`) |
+| **Serial Port** | Full-duplex `115,200` baud, 8N1 byte stream (no hardware flow control) for host terminal I/O and boot transfers. | `BIOS_BLK_SERIAL` (`0x10`) |
+| **System Timer** | Free-running `64`-bit monotonic counter ticking at `1 MHz` (`1 µs` resolution) since reset. | `BIOS_BLK_TIME` (`0x50`) |
+| **Audio** | Single-channel square-wave piezo buzzer (`16`–`20,000 Hz`, `0` = silent). | `BIOS_BLK_AUDIO` (`0x60`) |
+| **Status LEDs** | Three individually controllable indicator LEDs (Red, Green, Blue). | `BIOS_BLK_LED` (`0x70`) |
+| **System Control** | BIOS version query, full hardware reset, and OS `ecall` extension hook (`a7 >= 0x0100`). | `BIOS_BLK_SYS` (`0x00`) |
+
+All display refresh and background input buffering operate autonomously with zero polling burden on Oasis32 software. Programs simply write pixels, glyphs, or sprite descriptors into Public Video RAM and poll or block on BIOS services as needed.
 
 ### 1.3 Execution Rules & Honor-System Boundaries
-*TODO: Document what Stage-2 software is permitted to do (execute standard `RV32IMAC_Zifencei` instructions in User SRAM, read/write Public Video RAM, and invoke BIOS services via `ecall`) and what it is strictly prohibited from doing (accessing CSRs, masking interrupts, accessing addresses outside User SRAM and Public Video RAM, or attempting direct hardware MMIO). Include a brief note on why honoring these boundaries keeps software portable across future BIOS revisions or hardware-enforced isolation.*
+
+In the tradition of classic microcomputers, Oasis32 executes loaded programs directly on the processor without virtual memory or runtime hardware memory protection. The boundary between Oasis32 software and the Resident System ROM is maintained by **architectural contract** (backed by assemble-time checks in the disk build toolchain).
+
+#### Permitted Operations
+Oasis32 software is free to:
+* Execute any standard **`RV32IMAC_Zifencei`** instruction located within **User SRAM** (`0x2000_0000`–`0x2007_3FFF`).
+* Read and write anywhere in **User SRAM** (`0x2000_0000`–`0x2007_3FFF`) and **Public Video RAM** (`0x2007_4000`–`0x2007_FFFF`).
+* Invoke Resident BIOS services (`a7 = 0x0000`–`0x00FF`) and OS extensions (`a7 >= 0x0100`) using `ecall`.
+* Register a custom `ecall` dispatcher inside User SRAM via `BIOS_SYS_SET_OS_ECALL_HANDLER` (`0x02`).
+
+#### Prohibited Operations
+Oasis32 software must **never**:
+* **Access CSRs or Privileged Instructions:** Do not execute CSR instructions (`Zicsr`), trap-return/sleep instructions (`mret`, `wfi`), or vendor-specific extensions. Trap vectors, interrupt masks, and system status registers belong exclusively to the System ROM.
+* **Access Reserved or Unmapped Addresses:** Do not read, write, or branch to any address outside User SRAM and Public Video RAM. Never hardcode System ROM addresses or attempt direct memory-mapped peripheral I/O.
+* **Execute Code from Video RAM:** Treat Public Video RAM (`0x2007_4000`–`0x2007_FFFF`) as data-only.
+* **Pass Out-of-Range Pointers to BIOS Services:** Any buffer, string, or callback pointer passed to a BIOS `ecall` must lie completely within User SRAM (BIOS services validate pointer bounds and reject out-of-range addresses with `ERR_INVALID_ARG`).
+
+#### Why These Boundaries Matter
+Violating these rules results in undefined behavior: modifying system state can stall background keyboard/mouse input, corrupt display scanout, or crash the machine outright. Conversely, software that strictly honors these rules is guaranteed to remain portable across future System ROM updates—including any future revision that enables hardware-enforced privilege or memory protection.
 
 ### 1.4 Interrupt Transparency & Runtime Faults
-*TODO: Explain that all background hardware servicing (display refresh, keyboard/mouse buffering, typematic key repeat) is completely transparent to user code: every general-purpose register (`x1–x31`) and the user stack (`sp`) are preserved bit-for-bit across background events. Also document what happens if a program triggers a synchronous CPU fault (illegal instruction, invalid memory access, etc.): the BIOS prints a diagnostic trap report (`mcause`, `mepc`, `mtval`) over the debug serial console and halts until reset.*
+
+#### Transparent Background Servicing
+All background hardware activity—including display refresh, keyboard/mouse event capture, and typematic key repeat—is completely transparent to Oasis32 software:
+
+* **Bit-for-Bit Register Preservation:** A background hardware interrupt may occur between any two instructions and is guaranteed to return with every general-purpose register (`x1`–`x31`) and the program counter completely unchanged.
+* **Isolated Interrupt Stack:** Background interrupts execute on an internal BIOS stack and **never** touch the program's stack pointer (`sp`). Programs do not need to reserve extra stack space or write special interrupt-safe boilerplate for background events. *(Explicit `ecall` calls do use a small amount of the caller's stack; see §4.1.)*
+
+#### Synchronous Runtime Faults
+If Oasis32 software triggers a synchronous processor exception other than `ecall`—such as an illegal instruction, an unaligned memory access, or a bus fault from accessing an unmapped address—the BIOS catches the trap, prints a diagnostic report over the serial port, and halts the machine until Reset:
+
+```text
+[BIOS FATAL] Unhandled sync trap: mcause=0x00000002 mepc=0x20000148 mtval=0x00000000
+```
+
+| Field | Debugging Meaning |
+|:---|:---|
+| **`mcause`** | RISC-V synchronous exception code (e.g., `0x2` = illegal instruction, `0x4`/`0x6` = misaligned load/store, `0x5`/`0x7` = load/store access fault). |
+| **`mepc`** | Address of the faulting instruction in User SRAM (match against your `.dis` disassembly listing). |
+| **`mtval`** | Trap-specific value (typically the faulting memory address or offending instruction encoding, or `0` if unavailable). |
 
 ---
 
@@ -47,7 +196,7 @@
 *TODO: Provide a complete address/size/alignment table of the 48 KB (`49,152` bytes, `0x2007_4000`–`0x2007_FFFF`) video region (`FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`, `VIDEO_CTRL`, `SPRITE_OAM`, `SPRITE_PAT`) with their symbolic constants from `include/abi/memory_map.h`, cross-referencing Chapter 5 for detailed bit/struct layouts.*
 
 ### 2.4 Linking Against the Memory Map (`memory_map.h` & `sd_payload.ld.S`)
-*TODO: Explain how Stage-2 programs consume `include/abi/memory_map.h` and the shared preprocessed linker script `include/ld/sd_payload.ld.S` (including exported linker symbols such as `__payload_start`, `__payload_end`, `__payload_size`, `__bss_start`, `__bss_end`, and `__stack_top`, and the `.text.entry` placement convention).*
+*TODO: Explain how Oasis32 programs consume `include/abi/memory_map.h` and the shared preprocessed linker script `include/ld/sd_payload.ld.S` (including exported linker symbols such as `__payload_start`, `__payload_end`, `__payload_size`, `__bss_start`, `__bss_end`, and `__stack_top`, and the `.text.entry` placement convention).*
 
 ---
 
@@ -56,21 +205,18 @@
 ### 3.1 Bootable Disk Image Format (`"OA32"`)
 *TODO: Specify the exact binary layout of an Oasis32 disk image (used identically on raw SD cards starting at LBA 0 and over serial in Base64): the packed 16-byte little-endian Boot Image Header (`magic = 0x3233414F` / `"OA32"`, `load_addr`, `entry_addr`, `payload_size`) and raw payload starting at byte offset `0x10` (16), sharing up to 496 bytes of LBA 0 and continuing across LBA 1..N with zero-padding at the end of the final 512-byte sector. Document the bootloader's bounds-validation rules (User SRAM bounds, 32-bit overflow checks) and `include/abi/boot_header.h` constants.*
 
-### 3.2 Startup Boot Menu & Serial Transfer Workflow
-*TODO: Document the interactive startup boot menu presented on power-up or reset over the serial console (115,200 baud, 8N1) and its four options: `ENTER` (boot from SD card), `1` (boot Base64-encoded `.oa32` image directly into User SRAM without touching SD), `2` (receive Base64-encoded `.oa32` image into User SRAM staging buffer, validate, and write raw to SD starting at LBA 0), and `3` (built-in hardware diagnostic demo). Cover `"Insert boot disk"` / `"Insert disk to write"` prompts, whitespace-ignoring Base64 decoding, automatic termination after `16 + payload_size` decoded bytes, and error recovery back to the boot menu. (Note: verify final exact prompt wording once Sub-Phase 3c is implemented.)*
+### 3.2 Bootloader Interface & Startup Menu (User Guide)
+*TODO: Provide complete user documentation for operating the interactive startup bootloader over the serial console (connecting a host terminal at 115,200 baud, 8N1, no flow control). Document the power-up splash screen, exact menu layout, and step-by-step usage for all four options: `ENTER` (boot from SD card), `1` (boot a Base64-encoded `.oa32` disk image directly into User SRAM without touching the SD card), `2` (receive a Base64-encoded `.oa32` image into User SRAM, validate it, and write it raw to an SD card starting at LBA 0), and `3` (run the built-in hardware diagnostic demo). Document interactive prompts (`"Insert boot disk"` / `"Insert disk to write"`), Base64 framing rules (whitespace ignored, stops automatically after `16 + payload_size` decoded bytes), error messages, and recovery back to the boot menu. (Note: verify final exact prompt wording once Sub-Phase 3c is implemented.)*
 
 ### 3.3 Guaranteed Machine State at Entry (`_start`)
-*TODO: Specify every guaranteed register, memory, and peripheral invariant when the Stage-1 bootloader transfers control to `entry_addr` (after executing `fence.i`):*
+*TODO: Specify every guaranteed register, memory, and peripheral invariant when the BIOS bootloader transfers control to `entry_addr` (after executing `fence.i`):*
 - *CPU & Stack: `sp = USER_STACK_TOP` (`0x2007_4000`, 16-byte aligned); all other GPRs unspecified.*
-- *Memory & `.bss`: `[load_addr, load_addr + payload_size)` holds the verified payload bytes; **Stage-2 `_start` is responsible for zeroing `[__bss_start, __bss_end)`** (since `.bss` is not encoded in the 16-byte `"OA32"` header). Unloaded regions of User SRAM are unspecified.*
+- *Memory & `.bss`: `[load_addr, load_addr + payload_size)` holds the verified payload bytes; **the program's `_start` is responsible for zeroing `[__bss_start, __bss_end)`** (since `.bss` is not encoded in the 16-byte `"OA32"` header). Unloaded regions of User SRAM are unspecified.*
 - *Clean Peripheral Handoff: Before jumping to `entry_addr`, the bootloader resets Video RAM (`FRAMEBUF`, `TEXT_BUF`, `SPRITE_OAM`, `SPRITE_PAT` zeroed; default CP437 font loaded in `FONT_RAM`; `VIDEO_CTRL.LATCH_OAM = 1`), resets the text console cursor to `(0, 0)` hidden (`vis = 0`, `blink = 0`), flushes all keyboard/mouse queues, centers the mouse at `(320, 240)`, restores default keyboard repeat (`500 ms` delay, `50 ms` rate), silences the piezo buzzer, turns all 3 status LEDs off, and leaves `os_ecall_handler = 0`.*
 - *SD Card: If booted via `ENTER`, the SD card is already initialized (`SD_STATUS_PRESENT | SD_STATUS_READY`); if booted via serial (`1`), a card may or may not be present/initialized (call `BIOS_SD_STATUS` / `BIOS_SD_INIT` before block I/O).*
 
 ### 3.4 Program Termination, Exit & Reboot Semantics
-*TODO: Clarify that Stage-2 payloads are booted via a one-way jump (there is no caller to `ret` to). Document how a program should idle cleanly (e.g., event loop) or perform a clean full system restart via `BIOS_SYS_REBOOT` (as well as hardware reset button behavior).*
-
-### 3.5 Building & Deploying Stage-2 Disk Images
-*TODO: Provide a concise walkthrough of the host-side build and deployment flow: using `oasis32_add_disk_executable()` in `cmake/oasis32.cmake` (strictly linking only `oasis32_abi` with `-march=rv32imac_zifencei -mabi=ilp32`), how `sd_payload.ld.S` automatically prepends the 16-byte `"OA32"` header into the `.oa32` binary, and how to Base64-encode and transmit the `.oa32` file over the serial port for Menu Options `1` and `2`.*
+*TODO: Clarify that boot payloads are entered via a one-way jump (there is no caller to `ret` to). Document how a program should idle cleanly (e.g., event loop) or perform a clean full system restart via `BIOS_SYS_REBOOT` (as well as hardware reset button behavior).*
 
 ---
 
@@ -83,10 +229,10 @@
 *TODO: Document the uniform signed-integer return convention in `a0` (`a0 >= 0` indicates success, `a0 < 0` indicates error, enabling single-instruction `bltz a0, ...` error checks) and tabulate all standardized error codes from `include/abi/bios_abi.h`: `ERR_OK (0)`, `ERR_UNSUPPORTED (-1)`, `ERR_INVALID_ARG (-2)`, `ERR_EMPTY (-3)`, `ERR_BUSY (-4)`, `ERR_IO (-5)`, and `ERR_NO_DEVICE (-6)`.*
 
 ### 4.3 Service ID Partitioning & Subsystem Blocks
-*TODO: Document the split between Resident BIOS services (`0x0000`–`0x00FF`) and Stage-2 OS extensions (`0x0100+`), and summarize the 16-ID subsystem blocks (`0x00` System, `0x10` Serial, `0x20` Video, `0x30` Input, `0x40` Storage, `0x50` Timer, `0x60` Audio, `0x70` LEDs, `0x80` Text Console, `0x90–0xFF` Reserved).*
+*TODO: Document the split between Resident BIOS services (`0x0000`–`0x00FF`) and OS extensions (`0x0100+`), and summarize the 16-ID subsystem blocks (`0x00` System, `0x10` Serial, `0x20` Video, `0x30` Input, `0x40` Storage, `0x50` Timer, `0x60` Audio, `0x70` LEDs, `0x80` Text Console, `0x90–0xFF` Reserved).*
 
-### 4.4 Extending `ecall` for a Stage-2 Operating System
-*TODO: Document how a Stage-2 OS registers its own syscall dispatcher for `a7 >= 0x0100` using `BIOS_SYS_SET_OS_ECALL_HANDLER` (alignment and User SRAM range requirements, clearing with `0`). Explain the exact register state on entry to the OS handler (`a0–a5` arguments, `a7` service ID, standard `ret` return via `ra` with result in `a0`), and highlight **nested `ecall` re-entrancy** (an OS syscall handler may freely invoke BIOS `ecall` services such as `BIOS_SD_READ` or `BIOS_TEXT_PUTS`).*
+### 4.4 Extending `ecall` for an Operating System
+*TODO: Document how an operating system registers its own syscall dispatcher for `a7 >= 0x0100` using `BIOS_SYS_SET_OS_ECALL_HANDLER` (alignment and User SRAM range requirements, clearing with `0`). Explain the exact register state on entry to the OS handler (`a0–a5` arguments, `a7` service ID, standard `ret` return via `ra` with result in `a0`), and highlight **nested `ecall` re-entrancy** (an OS syscall handler may freely invoke BIOS `ecall` services such as `BIOS_SD_READ` or `BIOS_TEXT_PUTS`).*
 
 ---
 
@@ -136,7 +282,7 @@
 - *`BIOS_SYS_REBOOT` (`0x01`) — full hardware reset (does not return).*
 - *`BIOS_SYS_SET_OS_ECALL_HANDLER` (`0x02`) — register/clear OS dispatcher (`0` or 2-byte-aligned address in User SRAM).*
 
-### 6.2 Debug Serial Console (`BIOS_BLK_SERIAL`, `0x10`–`0x1F`)
+### 6.2 Serial Port (`BIOS_BLK_SERIAL`, `0x10`–`0x1F`)
 *TODO: Overview of the fixed 115,200 baud 8N1 serial port (no hardware flow control; 8-bit clean binary/text byte stream), followed by full reference entries for:*
 - *`BIOS_SERIAL_READ` (`0x10`) — blocking byte read (`0..255`).*
 - *`BIOS_SERIAL_TRY_READ` (`0x11`) — non-blocking byte read or `ERR_EMPTY`.*
@@ -207,6 +353,22 @@
 - *`BIOS_TEXT_SET_CURSOR_STATE` (`0x85`)*
 - *`BIOS_TEXT_SCROLL_UP` (`0x86`)*
 - *`BIOS_TEXT_SCROLL_DOWN` (`0x87`)*
+
+---
+
+## 7. Cross-Compiling & Deploying Disk Images
+
+### 7.1 Toolchain & Required Flags
+*TODO: Specify the host RISC-V cross-toolchain (`riscv32-unknown-elf-gcc`, `objcopy`, `objdump`) and the exact bare-metal compile/link flags required for Oasis32 disk payloads (`-march=rv32imac_zifencei -mabi=ilp32 -nostdlib -nostartfiles -nodefaultlibs -Wl,--build-id=none`). Explain how to include `include/abi/*.h` and preprocess `include/ld/sd_payload.ld.S`.*
+
+### 7.2 Building Disk Images (CMake & Manual CLI)
+*TODO: Document both workflows for producing a bootable `.oa32` disk image:*
+- *Using the project's `oasis32_add_disk_executable()` helper in `cmake/oasis32.cmake` (which automatically enforces the `oasis32_abi` boundary, preprocesses `sd_payload.ld.S`, and emits `.elf`, `.dis`, `.map`, and `.oa32`).*
+- *A standalone manual CLI sequence (`gcc -E -P -x c` to preprocess `sd_payload.ld.S`, `gcc` to assemble/link, and `objcopy -Obinary` to emit `.oa32`) for programmers building outside CMake.*
+*Briefly note minimal `_start` startup requirements (`.section .text.entry`, zeroing `[__bss_start, __bss_end)`).*
+
+### 7.3 Encoding & Sending Disk Images Over Serial
+*TODO: Provide step-by-step host instructions for Base64-encoding a `.oa32` image and streaming it to Oasis32 over the 115,200 baud 8N1 USB-C serial port for both **Option `1` (RAM-only boot)** for rapid edit-assemble-test iteration and **Option `2` (write to SD card)** for persistent boot disks. Include practical examples for common host environments (PowerShell / Windows, macOS / Linux `base64`, and terminal-emulator "send text file" or simple Python `pyserial` transfer) and troubleshooting tips (ensuring 115,200 8N1, no flow control, clean Base64 padding, and verifying transfer completion).*
 
 ---
 
