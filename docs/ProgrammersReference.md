@@ -364,14 +364,80 @@ Before transferring control (or writing to SD in Option `2`), the bootloader val
 *TODO: Provide complete user documentation for operating the interactive startup bootloader over the serial console (connecting a host terminal at 115,200 baud, 8N1, no flow control). Document the power-up splash screen, exact menu layout, and step-by-step usage for all four options: `ENTER` (boot from SD card), `1` (boot a raw binary `.oa32` disk image directly into User SRAM without touching the SD card), `2` (receive a raw binary `.oa32` image into User SRAM, validate header and CRC-32, and write it raw to an SD card starting at LBA 0), and `3` (run the built-in hardware diagnostic demo). Document interactive prompts (`"Insert boot disk"` / `"Insert disk to write"`), raw binary framing rules (stops automatically after `32 + payload_size` bytes; `ESC`/`Ctrl-C` cancels before byte 0 `'O'` arrives; idle timeout aborts stalled transfers), error messages, and recovery back to the boot menu. (Note: verify final exact prompt wording once Sub-Phase 3c is implemented.)*
 
 ### 3.3 Guaranteed Machine State at Entry (`_start`)
-*TODO: Specify every guaranteed register, memory, and peripheral invariant when the BIOS bootloader transfers control to `entry_addr` (after executing `fence.i`):*
-- *CPU & Stack: `sp = USER_STACK_TOP` (`0x2007_4000`, 16-byte aligned); all other GPRs unspecified.*
-- *Memory & `.bss`: `[load_addr, load_addr + payload_size)` holds the verified payload bytes; **the program's `_start` is responsible for zeroing `[__bss_start, __bss_end)`** (since `.bss` is not encoded in the 32-byte `"OA32"` header). Unloaded regions of User SRAM are unspecified.*
-- *Clean Peripheral Handoff: Before jumping to `entry_addr`, the bootloader resets Video RAM (`FRAMEBUF`, `TEXT_BUF`, `SPRITE_OAM`, `SPRITE_PAT` zeroed; default CP437 font loaded in `FONT_RAM`; `VIDEO_CTRL.LATCH_OAM = 1`), resets the text console cursor to `(0, 0)` hidden (`vis = 0`, `blink = 0`), flushes all keyboard/mouse queues, centers the mouse at `(320, 240)`, restores default keyboard repeat (`500 ms` delay, `50 ms` rate), silences the piezo buzzer, turns all 3 status LEDs off, and leaves `os_ecall_handler = 0`.*
-- *SD Card: If booted via `ENTER`, the SD card is already initialized (`SD_STATUS_PRESENT | SD_STATUS_READY`); if booted via serial (`1`), a card may or may not be present/initialized (call `BIOS_SD_STATUS` / `BIOS_SD_INIT` before block I/O).*
+
+Immediately after validating the `"OA32"` header, loading the payload into `[load_addr, load_addr + payload_size)`, and verifying its IEEE CRC-32 checksum, the bootloader performs a clean peripheral handoff, synchronizes the instruction stream with `fence.i`, initializes the stack pointer, and jumps to `entry_addr`. Every Oasis32 program can rely on the following machine-state guarantees at its first instruction, regardless of whether it was auto-booted from SD, launched from the boot menu, or loaded over the serial port.
+
+#### CPU & Register State
+
+| Resource | Guaranteed State at Entry |
+|:---|:---|
+| **`pc`** | `entry_addr` from the `"OA32"` header (2-byte aligned, within User SRAM). |
+| **`sp` (`x2`)** | `USER_STACK_TOP` (`0x2007_4000`), 16-byte aligned per `ILP32` (§2.2). |
+| **`zero` (`x0`)** | Hardwired `0`. |
+| **All other GPRs** (`ra`, `gp`, `tp`, `t0–t6`, `s0–s11`, `a0–a7`) | **Unspecified.** Programs must initialize any registers they depend on—including `gp`/`tp` if used—and must **not** treat `ra` as a valid return address (entry is a one-way jump; see §3.4). |
+| **Instruction Coherence** | `fence.i` has already been executed after payload loading, so all instructions in `[load_addr, load_addr + payload_size)` are immediately visible to instruction fetch. |
+
+#### Memory State & `.bss` Initialization
+
+* **Loaded Payload:** `[load_addr, load_addr + payload_size)` contains the exact, CRC-32-verified payload bytes from the `"OA32"` image.
+* **Unloaded User SRAM:** All bytes of User SRAM outside `[load_addr, load_addr + payload_size)` are **unspecified** and may contain leftover staging data from the bootloader.
+* **Program `.bss` Responsibility:** Because `.bss` is marked `NOLOAD` and is not encoded in the 32-byte `"OA32"` header (§2.4, §3.1), **the program's `_start` routine is responsible for zeroing `[__bss_start, __bss_end)`** before reading any uninitialized static or global variables. When linked with `sd_payload.ld.S`, both symbols are 4-byte aligned, permitting a simple word-store zeroing loop.
+
+#### Clean Peripheral & BIOS Handoff State
+
+Before jumping to `entry_addr`, the bootloader resets all user-visible display, input, audio, indicator, and BIOS hook state to a clean baseline:
+
+| Subsystem | Guaranteed State at Entry |
+|:---|:---|
+| **Bitmap Framebuffer (`FRAMEBUF`)** | Zero-filled (`0x00`; all 640×480 pixels black). |
+| **Programmable Font (`FONT_RAM`)** | Default 256-glyph 8×8 IBM Code Page 437 font loaded (equivalent to `BIOS_VIDEO_RESET_FONT`). |
+| **Text Overlay (`TEXT_BUF`)** | Zero-filled (`0x00`; all 80×60 cells transparent). |
+| **Text Console Cursor** | Positioned at `(col = 0, row = 0)`, hidden (`vis = 0`, `blink = 0`). |
+| **Video Control (`VIDEO_CTRL`)** | `VIDEO_CTRL_FLAGS_OFF` (`+0x00`) = `VIDEO_CTRL_LATCH_OAM_BIT` (`0x01`, frame-latched OAM mode enabled); reserved bytes `+0x01..+0x3F` = `0x00`. |
+| **Hardware Sprites (`SPRITE_OAM`, `SPRITE_PAT`)** | Zero-filled (`0x00`; all 16 sprite slots disabled and all 58 patterns blank). |
+| **Keyboard** | Event queue flushed (empty); typematic repeat restored to boot defaults (`delay = 500 ms`, `rate = 50 ms`). Live state (`BIOS_KEYBOARD_STATE`) reflects keys physically held at entry. |
+| **Mouse** | Motion/wheel and button event queues flushed (empty); screen-space position centered at `(320, 240)`. Live button mask (`BIOS_MOUSE_STATE`) reflects buttons physically held at entry. |
+| **Audio (Piezo Buzzer)** | Silenced (`AUDIO_FREQ_OFF = 0`). |
+| **Status LEDs** | All three LEDs (`LED_RED`, `LED_GREEN`, `LED_BLUE`) turned off (`0`). |
+| **OS `ecall` Hook** | Cleared (`0`); `ecall` invocations with `a7 >= 0x0100` return `ERR_UNSUPPORTED` (`-1`) until a handler is registered via `BIOS_SYS_SET_OS_ECALL_HANDLER` (§4.4). |
+| **Serial Port** | Active at 115,200 baud, 8N1 (no hardware flow control). Programs sensitive to stray host input should drain any pending RX bytes with `BIOS_SERIAL_TRY_READ`. |
+| **System Timer & VSYNC Counter** | Free-running continuously since hardware reset (non-zero monotonic values; **not** reset to `0` at entry). Measure elapsed durations by subtracting an initial reading from `BIOS_TIME_US` or `BIOS_VIDEO_FRAME_COUNT`. |
+
+#### SD Card State (Boot-Path Dependent)
+
+Unlike the peripherals above, SD card initialization state depends on how the program was launched:
+
+* **Booted from SD Card** (auto-boot or menu `ENTER`): A card is seated and already initialized—`BIOS_SD_STATUS` reports `SD_STATUS_PRESENT | SD_STATUS_READY` (plus `SD_STATUS_SDHC` if applicable), so `BIOS_SD_READ` / `BIOS_SD_WRITE` may be issued immediately.
+* **Booted over Serial** (menu `1`): An SD card may or may not be inserted or initialized.
+
+For portability across both boot paths, programs that use SD block storage should query `BIOS_SD_STATUS` and call `BIOS_SD_INIT` whenever `SD_STATUS_READY` is clear before issuing block I/O.
 
 ### 3.4 Program Termination, Exit & Reboot Semantics
-*TODO: Clarify that boot payloads are entered via a one-way jump (there is no caller to `ret` to). Document how a program should idle cleanly (e.g., event loop) or perform a clean full system restart via `BIOS_SYS_REBOOT` (as well as hardware reset button behavior).*
+
+#### One-Way Entry (No Return to Bootloader)
+
+Bootable `"OA32"` payloads are entered via a **one-way jump** to `entry_addr`. There is no caller frame on the stack, `ra` is unspecified (§3.3), and the BIOS does not provide a "return to boot menu" `ret` target.
+
+* **Never `ret` from `_start`:** Executing `ret` or falling off the end of `_start` transfers control to an undefined address and typically triggers a synchronous fatal fault (§1.4).
+* **OS-Loaded Programs:** An operating system running in User SRAM is free to define its own exit contract for child programs it loads (such as calling them with a valid `ra` or exposing an OS exit `ecall` at `a7 >= 0x0100`; §4.4), but standalone bootable images own the machine until reboot or reset.
+
+#### Idling Cleanly
+
+Because privileged instructions such as `wfi` are excluded from the Oasis32 ISA (§1.1), a program that has completed its work and wants to keep its output visible on screen should enter an explicit idle or event loop rather than attempting to halt the CPU directly:
+
+* **Wait for User Action:** Block in a BIOS input service such as `BIOS_KEYBOARD_READ` (`0x30`) or `BIOS_SERIAL_READ` (`0x10`)—for example, prompting the user to press a key to restart—or pace a passive screen with `BIOS_VIDEO_WAIT_VSYNC` (`0x21`).
+* **Infinite Loop:** A simple branch-to-self loop keeps the current `FRAMEBUF`, `TEXT_BUF`, and sprite state displayed indefinitely; background display refresh and input buffering continue running normally.
+
+#### Software Reboot (`BIOS_SYS_REBOOT`)
+
+To restart the machine cleanly under software control, invoke `BIOS_SYS_REBOOT` (`a7 = 0x01`; see §6.1):
+
+* **Does Not Return:** `BIOS_SYS_REBOOT` performs a full hardware reset of the system and never returns to the caller.
+* **Complete State Reset:** Prior User SRAM and Public Video RAM contents are not preserved and must be treated as lost; all internal peripherals and clocks re-initialize from scratch, the System ROM restarts from the beginning, and the normal startup sequence (splash, SD check, and boot menu) runs anew.
+
+#### Hardware Reset Button
+
+Pressing the physical Reset button on the machine performs an equivalent full hardware reset at any time—including when software is unresponsive, caught in an infinite loop, or halted after a synchronous runtime fault (§1.4).
 
 ---
 
