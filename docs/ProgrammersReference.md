@@ -444,7 +444,27 @@ Pressing the physical Reset button on the machine performs an equivalent full ha
 ## 4. BIOS ABI & Calling Contract
 
 ### 4.1 Invoking BIOS Services (`ecall`)
-*TODO: Specify the exact RISC-V `ecall` calling contract: `a7` holds the service ID, `a0–a5` pass up to 6 word-sized arguments, `a0` (and for select calls, `a1–a5`) return results. State `ILP32` register preservation guarantees (`s0–s11`, `sp`, `gp`, `tp`, `ra` preserved; `t0–t6` and unspecified `a0–a7` caller-saved/clobberable), caller stack headroom expectations (~64–128 bytes for the trap frame and service locals), and the fact that background I/O remains live during blocking BIOS calls.*
+
+Oasis32 software invokes all resident BIOS services (and registered OS extensions; §4.4) using the standard RISC-V `ecall` instruction rather than calling hardcoded System ROM addresses. This keeps every disk image completely independent of the BIOS's internal layout in Flash.
+
+#### Register Contract (`ILP32`)
+
+Before executing `ecall`, load the service ID into `a7` and any required arguments into `a0–a5`. Upon return, execution resumes at the instruction immediately following `ecall` with the result in `a0` (and `a1–a5` for select multi-return services):
+
+| Register(s) | ABI Role | Across `ecall` |
+|:---|:---|:---|
+| **`a7`** (`x17`) | **Service ID** (`0x0000`–`0x00FF` BIOS; `0x0100+` OS) | **Caller-saved** (may be clobbered; reload before each `ecall`). |
+| **`a0–a5`** (`x10–x15`) | **Arguments** (up to 6 words) & **Return Values** (`a0`, plus `a1–a5` where documented) | **Caller-saved** (any register not listed as an output may be clobbered). |
+| **`a6`** (`x16`), **`t0–t6`** (`x5–x7`, `x28–x31`) | Temporary / scratch registers | **Caller-saved** (may be clobbered). |
+| **`s0–s11`** (`x8–x9`, `x18–x27`) | Saved registers | **Preserved** (guaranteed unchanged). |
+| **`sp`** (`x2`), **`gp`** (`x3`), **`tp`** (`x4`) | Stack, global, and thread pointers | **Preserved** (guaranteed unchanged). |
+| **`ra`** (`x1`) | Return address | **Preserved** (unlike `call`/`jal`, `ecall` does not overwrite `ra`). |
+
+#### Stack, Pointer & Concurrency Rules
+
+* **Caller Stack Headroom & Alignment:** While background hardware interrupts never touch the user stack (§1.4), synchronous `ecall` invocations temporarily allocate a small trap frame and service locals on the **caller's stack**. Before executing `ecall`, `sp` must point inside User SRAM, be **16-byte aligned** per `ILP32` (§2.2), and have at least **128 bytes** of free headroom below it (more if invoking nested OS extensions; §4.4).
+* **Pointer Arguments:** Every non-null buffer, string, or callback pointer passed to a BIOS service must lie completely within User SRAM (`[USER_RAM_BASE, USER_STACK_TOP)`). Out-of-range pointers are rejected with `ERR_INVALID_ARG` (`-2`).
+* **Live Background I/O:** Display refresh and background keyboard/mouse event capture remain continuously active during every BIOS call—including blocking waits (`BIOS_KEYBOARD_READ`, `BIOS_SERIAL_READ`, `BIOS_VIDEO_WAIT_VSYNC`) and longer block operations (`BIOS_SD_READ`, `BIOS_SD_WRITE`). Software will not drop display frames or buffered input events while inside an `ecall`.
 
 ### 4.2 Return Values & Standardized Error Codes
 *TODO: Document the uniform signed-integer return convention in `a0` (`a0 >= 0` indicates success, `a0 < 0` indicates error, enabling single-instruction `bltz a0, ...` error checks), explicitly noting the infallible unsigned-counter exceptions (`BIOS_TIME_US`, `BIOS_VIDEO_FRAME_COUNT`, `BIOS_VIDEO_WAIT_VSYNC`) and non-returning `BIOS_SYS_REBOOT`. Tabulate all standardized error codes from `include/abi/bios_abi.h`: `ERR_OK (0)`, `ERR_UNSUPPORTED (-1)`, `ERR_INVALID_ARG (-2)`, `ERR_EMPTY (-3)`, `ERR_BUSY (-4)`, `ERR_IO (-5)`, and `ERR_NO_DEVICE (-6)`.*
