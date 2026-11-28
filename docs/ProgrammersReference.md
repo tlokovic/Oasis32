@@ -467,13 +467,102 @@ Before executing `ecall`, load the service ID into `a7` and any required argumen
 * **Live Background I/O:** Display refresh and background keyboard/mouse event capture remain continuously active during every BIOS call—including blocking waits (`BIOS_KEYBOARD_READ`, `BIOS_SERIAL_READ`, `BIOS_VIDEO_WAIT_VSYNC`) and longer block operations (`BIOS_SD_READ`, `BIOS_SD_WRITE`). Software will not drop display frames or buffered input events while inside an `ecall`.
 
 ### 4.2 Return Values & Standardized Error Codes
-*TODO: Document the uniform signed-integer return convention in `a0` (`a0 >= 0` indicates success, `a0 < 0` indicates error, enabling single-instruction `bltz a0, ...` error checks), explicitly noting the infallible unsigned-counter exceptions (`BIOS_TIME_US`, `BIOS_VIDEO_FRAME_COUNT`, `BIOS_VIDEO_WAIT_VSYNC`) and non-returning `BIOS_SYS_REBOOT`. Tabulate all standardized error codes from `include/abi/bios_abi.h`: `ERR_OK (0)`, `ERR_UNSUPPORTED (-1)`, `ERR_INVALID_ARG (-2)`, `ERR_EMPTY (-3)`, `ERR_BUSY (-4)`, `ERR_IO (-5)`, and `ERR_NO_DEVICE (-6)`.*
+
+#### Signed Return Convention
+
+With the explicit exceptions listed below, every Resident BIOS service uses a uniform **signed 32-bit integer return convention** in `a0`:
+
+* **`a0 >= 0` (Success):** The call succeeded. Depending on the service, `a0` holds `ERR_OK` (`0`), a byte value (`0x00`–`0xFF`), a packed event word, a count, a cursor coordinate, a status bitmask, or a packed version number. For multi-return services, secondary outputs in `a1–a5` are valid only when `a0 >= 0`.
+* **`a0 < 0` (Error or Non-Blocking Status):** The call failed or could not complete immediately, and `a0` holds one of the standardized negative error codes (`ERR_*`) defined in `include/abi/bios_abi.h`. When `a0 < 0`, the contents of `a1–a5` are unspecified.
+
+Because every valid data byte (`0..255`), count, coordinate, status bitmask, and event word has bit 31 clear, callers can distinguish any error from any valid success return with a single branch instruction (`bltz a0, error_handler` or `bgez a0, ok`).
+
+#### Standardized Error Codes (`include/abi/bios_abi.h`)
+
+| Constant | Value | Meaning & Typical Causes |
+|:---|---:|:---|
+| **`ERR_OK`** | `0` | Success (generic return for services that produce no scalar value in `a0`). |
+| **`ERR_UNSUPPORTED`** | `-1` | Unknown or unimplemented service ID in `a7` (including any `a7 >= 0x0100` when no OS `ecall` handler is registered; §4.4). |
+| **`ERR_INVALID_ARG`** | `-2` | Invalid argument: out-of-range parameter (e.g., invalid LED index, cursor coordinate, mouse coordinate, frequency, or LBA), misaligned address, or a pointer/buffer that extends outside User SRAM (`[USER_RAM_BASE, USER_STACK_TOP)`). |
+| **`ERR_EMPTY`** | `-3` | Non-blocking read found no data or event available (`BIOS_SERIAL_TRY_READ`, `BIOS_KEYBOARD_TRY_READ`, `BIOS_MOUSE_POS_TRY_READ`, `BIOS_MOUSE_BUTTON_TRY_READ`). |
+| **`ERR_BUSY`** | `-4` | Non-blocking write could not proceed immediately because the hardware buffer is full (`BIOS_SERIAL_TRY_WRITE`). |
+| **`ERR_IO`** | `-5` | Hardware or peripheral I/O failure (e.g., SD card initialization, CRC, or block transfer timeout error). |
+| **`ERR_NO_DEVICE`** | `-6` | Removable device not present or not yet initialized (e.g., no SD card inserted, or `BIOS_SD_INIT` has not succeeded since insertion). |
+
+*(Note: `ERR_EMPTY` and `ERR_BUSY` represent normal non-blocking polling outcomes rather than fatal faults. Stage-2 operating systems registering custom syscalls at `a7 >= 0x0100` are encouraged—though not required—to follow the same `a0 >= 0` / `a0 < 0` convention.)*
+
+#### Exceptions to the Signed Return Convention
+
+Four BIOS services do not follow the signed `a0 >= 0` / `a0 < 0` convention:
+
+* **Infallible Unsigned-Counter Services (`BIOS_TIME_US`, `BIOS_VIDEO_FRAME_COUNT`, `BIOS_VIDEO_WAIT_VSYNC`):** These three services cannot fail and return raw, full-width unsigned 32-bit counters in `a0` (plus the upper 32 bits in `a1` for `BIOS_TIME_US`). Bit 31 of `a0` will legitimately become `1` during normal uptime (for example, `BIOS_TIME_US` reaches `0x8000_0000` after ~35.8 minutes). Never test `a0` from these calls with `bltz`; treat it as an unsigned `uint32_t` and measure elapsed intervals using unsigned modular subtraction (`now - start`; see §5.5 and §6.6).
+* **Non-Returning Service (`BIOS_SYS_REBOOT`):** Invoking `BIOS_SYS_REBOOT` (`0x01`) performs an immediate full hardware reset and never returns to the caller (§3.4, §6.1).
 
 ### 4.3 Service ID Partitioning & Subsystem Blocks
-*TODO: Document the split between Resident BIOS services (`0x0000`–`0x00FF`) and OS extensions (`0x0100+`), and provide a compact index of the 16-ID subsystem blocks (`0x00` `BIOS_BLK_SYS` through `0x80` `BIOS_BLK_TEXT`, plus `0x90–0xFF` Reserved) cross-referencing §6.1–§6.9 (avoiding duplication of the capability descriptions in §1.2).*
+
+#### Top-Level Partition (`a7`)
+
+The 32-bit unsigned service ID space in `a7` is divided into two non-overlapping ranges defined in `include/abi/bios_abi.h`:
+
+| `a7` Range (Unsigned) | Constants (`bios_abi.h`) | Owner | Dispatch Behavior |
+|:---|:---|:---|:---|
+| **`0x0000_0000`–`0x0000_00FF`** | `BIOS_SVC_MIN` .. `BIOS_SVC_MAX` | **Resident BIOS** | Dispatched by the System ROM; unassigned IDs return `ERR_UNSUPPORTED` (`-1`). |
+| **`0x0000_0100`–`0xFFFF_FFFF`** | `OS_SVC_BASE` and above | **OS / User Extension** | Forwarded to the handler registered via `BIOS_SYS_SET_OS_ECALL_HANDLER` (§4.4), or returns `ERR_UNSUPPORTED` (`-1`) if no handler is installed. |
+
+#### Resident BIOS Subsystem Blocks (`0x00`–`0xFF`)
+
+Within the Resident BIOS range, service IDs are grouped into **16-ID subsystem blocks** (bits `[7:4]` identify the subsystem; bits `[3:0]` select the service within that block). This allows future System ROM revisions to add services without renumbering existing IDs.
+
+| Block Range | Base Constant (`bios_abi.h`) | Subsystem | Defined IDs (`0.1.0`) | Reference |
+|:---|:---|:---|:---|:---:|
+| `0x00`–`0x0F` | `BIOS_BLK_SYS` (`0x00`) | System Control | `0x00`–`0x02` | §6.1 |
+| `0x10`–`0x1F` | `BIOS_BLK_SERIAL` (`0x10`) | Serial Port | `0x10`–`0x13` | §6.2 |
+| `0x20`–`0x2F` | `BIOS_BLK_VIDEO` (`0x20`) | Video / VSYNC | `0x20`–`0x22` | §6.3 |
+| `0x30`–`0x3F` | `BIOS_BLK_INPUT` (`0x30`) | Keyboard & Mouse | `0x30`–`0x36`, `0x38`–`0x3F` | §6.4 |
+| `0x40`–`0x4F` | `BIOS_BLK_SD` (`0x40`) | SD Card Storage | `0x40`–`0x44` | §6.5 |
+| `0x50`–`0x5F` | `BIOS_BLK_TIME` (`0x50`) | Monotonic Timer | `0x50` | §6.6 |
+| `0x60`–`0x6F` | `BIOS_BLK_AUDIO` (`0x60`) | Piezo Audio | `0x60` | §6.7 |
+| `0x70`–`0x7F` | `BIOS_BLK_LED` (`0x70`) | Status LEDs | `0x70`–`0x71` | §6.8 |
+| `0x80`–`0x8F` | `BIOS_BLK_TEXT` (`0x80`) | Text Console | `0x80`–`0x87` | §6.9 |
+| `0x90`–`0xFF` | — | Reserved (Future BIOS) | None | — |
+
+Any unassigned ID—whether a spare slot inside an active block (such as `0x37` or `0x03`–`0x0F`) or an ID in `0x90`–`0xFF`—is guaranteed to return `ERR_UNSUPPORTED` (`-1`). For a consolidated single-table cheat sheet of all defined services, see Appendix C.
 
 ### 4.4 Extending `ecall` for an Operating System
-*TODO: Document how an operating system registers its own syscall dispatcher for `a7 >= 0x0100` using `BIOS_SYS_SET_OS_ECALL_HANDLER` (alignment and User SRAM range requirements, clearing with `0`). Explain the exact register state on entry to the OS handler (`a0–a5` arguments, `a7` service ID, standard `ret` return via `ra` with result in `a0`), and highlight **nested `ecall` re-entrancy** (an OS syscall handler may freely invoke BIOS `ecall` services such as `BIOS_SD_READ` or `BIOS_TEXT_PUTS`).*
+
+An operating system or resident runtime loaded into User SRAM can expose its own address-independent system calls to child programs without modifying the System ROM or hardcoding jump-table addresses. It does so by registering a single dispatcher function for all `ecall` invocations with `a7 >= OS_SVC_BASE` (`0x0100`).
+
+#### Registering & Clearing the OS Handler
+
+Call `BIOS_SYS_SET_OS_ECALL_HANDLER` (`a7 = 0x02`; see §6.1) with the handler's entry address in `a0`:
+
+* **Install Handler (`a0 != 0`):** The pointer must be **2-byte aligned** (`(fn_ptr & 1) == 0`) and lie within User SRAM (`USER_RAM_BASE <= fn_ptr <= USER_STACK_TOP - 2`, i.e., `0x2000_0000`–`0x2007_3FFE`). If valid, the BIOS installs the handler and returns `ERR_OK` (`0`). If misaligned or out of bounds, the BIOS returns `ERR_INVALID_ARG` (`-2`) and leaves any previously registered handler unchanged.
+* **Clear Handler (`a0 = 0`):** Unregisters the OS handler and returns `ERR_OK` (`0`). Subsequent `ecall` calls with `a7 >= 0x0100` return `ERR_UNSUPPORTED` (`-1`), matching the clean boot state (§3.3).
+
+#### Handler Entry & Return Contract
+
+When a program executes `ecall` with an unsigned service ID `a7 >= 0x0100` and a handler is installed, the BIOS dispatches directly into the OS handler as a standard `ILP32` function call:
+
+| Register(s) | State on Entry to OS Handler | Handler Responsibility |
+|:---|:---|:---|
+| **`a7`** (`x17`) | Caller's service ID (`>= 0x0100`), unmodified | Dispatch to the corresponding OS routine (or return `ERR_UNSUPPORTED` if unknown). |
+| **`a0–a5`** (`x10–x15`) | Caller's up to 6 argument words, unmodified | Read arguments; place return value in `a0` (and optionally `a1–a5` for multi-return OS syscalls). |
+| **`a6`**, **`t0–t6`** | Unspecified | Scratch registers; may be freely clobbered. |
+| **`ra`** (`x1`) | Return address into the BIOS `ecall` epilogue | Return via standard **`ret`** (save/restore `ra` on the stack if the handler calls subroutines). |
+| **`sp`** (`x2`) | Caller's `sp - 16` (16-byte aligned if caller's `sp` was aligned) | Must be restored to its entry value before `ret`. |
+| **`s0–s11`**, **`gp`**, **`tp`** | Caller's values | **Must be preserved** per `ILP32` so the caller's `ecall` register contract (§4.1) holds. |
+
+When the OS handler executes `ret`, the BIOS epilogue restores the caller's original `ra` and resumes execution at the instruction immediately following the caller's `ecall`, passing `a0` (and any secondary return registers `a1–a5`) straight through to the caller. Background display refresh and keyboard/mouse buffering remain continuously active throughout the OS handler's execution.
+
+#### Nested `ecall` Re-Entrancy
+
+Because the BIOS stores each active `ecall`'s return state on the **caller's stack** (16 bytes per nesting level) rather than in fixed global slots, OS syscall handlers are **fully re-entrant with respect to `ecall`**:
+
+* An OS handler invoked via `a7 >= 0x0100` may freely execute nested `ecall` instructions to call Resident BIOS services (for example, an OS file-read syscall calling `BIOS_SD_READ`, or an OS console syscall calling `BIOS_TEXT_PUTS` and `BIOS_KEYBOARD_READ`).
+* Nested calls into other OS syscalls (`a7 >= 0x0100`) are likewise supported by the BIOS, provided the OS handler's own internal data structures are re-entrant.
+* **Stack Headroom:** Because each active `ecall` shares the caller's stack, ensure that user stacks have sufficient headroom for the outer BIOS frame, the OS handler's stack frame, and the 128-byte minimum headroom required by any inner BIOS `ecall` (§4.1).
+
+*(Note: Returning from an OS handler always returns to the BIOS epilogue via `ret`, never via a privileged return instruction. If an OS implements process exit or context switching, it should manage that state in User SRAM before returning or transferring control cleanly within its own scheduler.)*
 
 ---
 
