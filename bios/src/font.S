@@ -15,7 +15,7 @@
  *
  * References:
  *   - docs/VideoArchitecture.md §2-§3
- *   - include/abi/memory_map.h (VIDEO_FONT_RAM_BASE = 0x2007D600, 2,048 B)
+ *   - include/abi/memory_map.h (VIDEO_FONT_RAM_BASE = 0x2007B600, 2,048 B)
  * ============================================================================
  */
 

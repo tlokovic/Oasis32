@@ -174,27 +174,31 @@
 #define BIOS_LED_READ               0x71
 
 /* ----------------------------------------------------------------------------
- * 0x80-0x8F: Text Console Services (80x60 TEXT_BUF + Hardware Blinking Cursor)
+ * 0x80-0x8F: Text Console Services (80x60 TEXT_BUF/TEXT_ATTR + Hardware Cursor)
  * ----------------------------------------------------------------------------
  *   BIOS_TEXT_CLEAR            ()                  -> a0 = ERR_OK (0)
- *     Zero-fills TEXT_BUF (0x00) and resets cursor to (0, 0).
+ *     Zero-fills TEXT_BUF and TEXT_ATTR (0x00) and resets cursor to (0, 0).
  *   BIOS_TEXT_PUTC             (a0=ch)             -> a0 = ERR_OK (0)
- *     Writes character at cursor, advancing/wrapping and auto-scrolling up
- *     past row 59. Control chars: '\n' (Unix newline: col=0, row++),
- *     '\r' (col=0), '\b' (left).
+ *     Writes character at cursor (and current text attribute to TEXT_ATTR),
+ *     advancing/wrapping and auto-scrolling up past row 59. Control chars:
+ *     '\n' (Unix newline: col=0, row++), '\r' (col=0), '\b' (left).
  *   BIOS_TEXT_PUTS             (a0=cstr_ptr)       -> a0 = ERR_OK or ERR_INVALID_ARG
  *     Prints NUL-terminated string via PUTC semantics (cstr_ptr in User SRAM).
  *   BIOS_TEXT_SET_CURSOR_POS   (a0=col, a1=row)    -> a0 = ERR_OK or ERR_INVALID_ARG
  *     Sets cursor position (col in 0..79, row in 0..59).
  *   BIOS_TEXT_GET_CURSOR_POS   ()                  -> a0 = col (0..79), a1 = row (0..59)
  *   BIOS_TEXT_SET_CURSOR_STATE (a0=vis, a1=frames) -> a0 = ERR_OK or ERR_INVALID_ARG
- *     vis: 0 = hidden, nonzero = visible (inverts glyph cell non-destructively).
+ *     vis: 0 = hidden, nonzero = visible (inverts glyph cell via XOR 0xFF).
  *     frames: blink half-period in 60 Hz frames (0 = solid, 1..255 = blink;
  *             e.g. 30 = 0.5 s on / 0.5 s off).
  *   BIOS_TEXT_SCROLL_UP        (a0=lines)          -> a0 = ERR_OK (0)
- *     Scrolls TEXT_BUF up by `lines` rows, filling bottom rows with 0x00.
+ *     Scrolls TEXT_BUF & TEXT_ATTR up by `lines` rows, filling bottom with 0x00.
  *   BIOS_TEXT_SCROLL_DOWN      (a0=lines)          -> a0 = ERR_OK (0)
- *     Scrolls TEXT_BUF down by `lines` rows, filling top rows with 0x00.
+ *     Scrolls TEXT_BUF & TEXT_ATTR down by `lines` rows, filling top with 0x00.
+ *   BIOS_TEXT_SET_ATTR         (a0=attr)           -> a0 = ERR_OK or ERR_INVALID_ARG
+ *     Sets current text attribute written by PUTC/PUTS (TEXT_ATTR_NORMAL=0x00
+ *     or TEXT_ATTR_REVERSE=0x01; reserved bits [31:1] must be 0).
+ *   BIOS_TEXT_GET_ATTR         ()                  -> a0 = current attr (0 or 1)
  */
 #define BIOS_TEXT_CLEAR             0x80
 #define BIOS_TEXT_PUTC              0x81
@@ -204,5 +208,7 @@
 #define BIOS_TEXT_SET_CURSOR_STATE  0x85
 #define BIOS_TEXT_SCROLL_UP         0x86
 #define BIOS_TEXT_SCROLL_DOWN       0x87
+#define BIOS_TEXT_SET_ATTR          0x88
+#define BIOS_TEXT_GET_ATTR          0x89
 
 #endif /* OASIS32_ABI_BIOS_ABI_H */

@@ -29,18 +29,22 @@
 #define VIDEO_FONT_GLYPHS           256
 #define VIDEO_FONT_GLYPH_HEIGHT     8       /* 8x8 glyphs, 8 bytes each */
 
+/* TEXT_ATTR per-cell attribute bits (80x60 grid, 1 byte/cell; bits 7:1 = 0) */
+#define TEXT_ATTR_NORMAL            0x00
+#define TEXT_ATTR_REVERSE           (1 << 0) /* 1 = invert 8x8 glyph (^ 0xFF) before OR */
+
 /* VIDEO_CTRL register offsets & bits (base = VIDEO_CTRL_BASE) */
 #define VIDEO_CTRL_FLAGS_OFF        0x00
 #define VIDEO_CTRL_LATCH_OAM_BIT    (1 << 0) /* 1 = frame-latched, 0 = live */
 
 /* ----------------------------------------------------------------------------
- * Hardware Sprite Engine (16 OAM Slots, 58 Masked 16x16 Patterns)
+ * Hardware Sprite Engine (16 OAM Slots, 111 Masked 16x16 Patterns)
  * ---------------------------------------------------------------------------- */
 #define SPRITE_OAM_COUNT            16
 #define SPRITE_OAM_STRIDE           8
 #define SPRITE_OAM_OFF_X            0x00    /* int16_t (-15..639) */
 #define SPRITE_OAM_OFF_Y            0x02    /* int16_t (-15..479) */
-#define SPRITE_OAM_OFF_PAT          0x04    /* uint8_t (0..57) */
+#define SPRITE_OAM_OFF_PAT          0x04    /* uint8_t (0..110) */
 #define SPRITE_OAM_OFF_FLAGS        0x05    /* uint8_t */
 
 #define SPRITE_FLAG_ENABLE          (1 << 0)
@@ -53,7 +57,7 @@
 #define SPRITE_BLEND_OR             (1 << 4) /* bg | pixels */
 #define SPRITE_BLEND_XOR            (2 << 4) /* bg ^ pixels */
 
-#define SPRITE_PAT_COUNT            58
+#define SPRITE_PAT_COUNT            111
 #define SPRITE_PAT_STRIDE           64      /* 32 B pixel plane + 32 B mask */
 #define SPRITE_PAT_PIXEL_OFF        0x00
 #define SPRITE_PAT_MASK_OFF         0x20

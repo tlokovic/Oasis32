@@ -15,7 +15,7 @@
 Because Stage-2 software executes in M-mode with the same hardware privilege as the BIOS, programs are trusted to respect the Oasis32 machine contract:
 
 * **What Stage-2 Software Should Do:**
-  * Execute standard unprivileged RISC-V instructions (`RV32IMAC_Zifencei`, `riscv-unprivileged.pdf`) within User SRAM (`USER_RAM_BASE`–`USER_RAM_END`) and render directly to the shared video buffers (`FRAMEBUF`, `TEXT_BUF`, `FONT_RAM`).
+  * Execute standard unprivileged RISC-V instructions (`RV32IMAC_Zifencei`, `riscv-unprivileged.pdf`) within User SRAM (`USER_RAM_BASE`–`USER_RAM_END`) and render directly to the shared video buffers (`FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`, `TEXT_ATTR`, `SPRITE_OAM`, `SPRITE_PAT`).
   * Interact with all machine peripherals exclusively through the resident BIOS `ecall` ABI.
 * **What Stage-2 Software Must Not Do:**
   * Modify privileged CSRs (`mtvec`, `mstatus`, `mie`, `mscratch`, or Hazard3 `Xh3irq` CSRs `0xBE0`–`0xBE5`).
@@ -131,7 +131,7 @@ Within the BIOS range (`0x0000`–`0x00FF`), service IDs are grouped into **16-I
 | `0x50`–`0x5F` | **Timer (`TIME_*`)** | Monotonic 64-bit microsecond clock. |
 | `0x60`–`0x6F` | **Audio (`AUDIO_*`)** | Piezo buzzer tone frequency / silence control. |
 | `0x70`–`0x7F` | **LEDs (`LED_*`)** | 3-bit status LED control. |
-| `0x80`–`0x8F` | **Text Console (`TEXT_*`)** | 80×60 cursor positioning, `PUTC`/`PUTS` (Unix `\n`, wrap, auto-scroll), scroll up/down, and blinking hardware cursor control. |
+| `0x80`–`0x8F` | **Text Console (`TEXT_*`)** | 80×60 cursor positioning, `PUTC`/`PUTS` (Unix `\n`, wrap, auto-scroll), per-cell reverse attributes, scroll up/down, and blinking hardware cursor control. |
 | `0x90`–`0xFF` | **Reserved** | Future BIOS expansion. |
 
 * **Registration via BIOS:** A Stage-2 OS registers (or clears, with `0`) its dispatcher via a dedicated BIOS call (`SYS_SET_OS_ECALL_HANDLER(fn_ptr)`). When an application executes `ecall` with `a7 >= 0x0100`:

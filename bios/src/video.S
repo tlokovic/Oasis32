@@ -3,7 +3,7 @@
  * Oasis32 Stage-1 BIOS — Core 1 Video Coprocessor (HSTX 640x480 @ 60 Hz 1 bpp)
  * ============================================================================
  * Launches RP2350 Core 1 as Oasis32's dedicated, hidden Video Coprocessor:
- *   - Core 0 (`video_init`): clears public FRAMEBUF (0x20074000, 38,400 B),
+ *   - Core 0 (`video_init`): clears public FRAMEBUF (0x20072000, 38,400 B),
  *     wakes Core 1 via the Boot ROM SIO FIFO handshake (rp2350-datasheet.pdf
  *     §5.3, pp. 345-347), and waits for Core 1's ready acknowledgement.
  *   - Core 1 (`core1_video_entry`): owns Scratchpad Bank 9 (0x20081000-1FFF),
@@ -14,11 +14,12 @@
  *     line buffer to HSTX_FIFO. Increments BIOS_VSYNC_COUNT_ADDR once per
  *     frame at the start of VBLANK.
  *
- * Scope (Phase 3b — Full Video Coprocessor: Bitmap + Text + Sprites):
+ * Scope (Phase 3b — Full Video Coprocessor: Bitmap + Text/Attr + Sprites):
  *   - 4-layer scanline compositing in Bank 9 ping-pong line buffers:
  *       1. FRAMEBUF (640x480 1 bpp)
  *       2. Behind-text sprites (BEHIND_TEXT=1, OAM Slot 15 -> Slot 0)
- *       3. TEXT_BUF / FONT_RAM (80x60 OR-composited 8x8 CP437 glyphs)
+ *       3. TEXT_BUF / FONT_RAM (80x60 OR-composited 8x8 CP437 glyphs) +
+ *          TEXT_ATTR per-cell reverse (^ 0xFF) + hardware cursor (^ 0xFF)
  *       4. In-front sprites (BEHIND_TEXT=0, OAM Slot 15 -> Slot 0)
  *   - VBLANK frame-latching of SPRITE_OAM into BIOS_CORE1_OAM_LATCH when
  *     VIDEO_CTRL.LATCH_OAM (bit 0) is set, or live beam-racing when clear.
@@ -49,6 +50,7 @@
 #define CMD_CURSOR_COL_OFF          0x8C    /* uint32_t active text col (0..79) */
 #define CMD_CURSOR_PHASE_OFF        0x90    /* uint32_t blink phase (0=on, 1=off) */
 #define CMD_CURSOR_CNT_OFF          0x94    /* uint32_t blink frame counter */
+#define CMD_CURSOR_BG_OFF           0x98    /* uint8_t saved pre-text bg byte at cursor */
 #define CMD_LIST_TOTAL_WORDS        19      /* 76 bytes of Flash DMA cmd lists */
 #define SPR_LIST_END                0xFF    /* Sentinel terminating Bank 9 sprite lists */
 
@@ -82,7 +84,7 @@ video_init:
     sw      s2, 16(sp)
     sw      s3, 12(sp)
 
-    /* 1. Clear 640x480 1 bpp public framebuffer to black (0x20074000..0x2007D5FF) */
+    /* 1. Clear 640x480 1 bpp public framebuffer to black (0x20072000..0x2007B5FF) */
     li      t0, VIDEO_FRAMEBUF_BASE
     li      t1, VIDEO_FRAMEBUF_BASE + VIDEO_FRAMEBUF_SIZE
 1:
@@ -91,8 +93,8 @@ video_init:
     bltu    t0, t1, 1b
 
     /* 1b. Load default CP437 8x8 Flash font into VIDEO_FONT_RAM_BASE (2,048 B),
-     *     clear TEXT_BUF, VIDEO_CTRL, SPRITE_OAM, and SPRITE_PAT, and enable
-     *     default frame-latched OAM mode (VIDEO_CTRL.LATCH_OAM = 1). */
+     *     clear TEXT_BUF, TEXT_ATTR, VIDEO_CTRL, SPRITE_OAM, and SPRITE_PAT, and
+     *     enable default frame-latched OAM mode (VIDEO_CTRL.LATCH_OAM = 1). */
     call    font_load_default
 
     li      t0, VIDEO_TEXT_BUF_BASE
@@ -212,12 +214,12 @@ video_wait_vsync:
  *   s3 = vactive_cmdlist_posted (0 = queue prefix + compose line, 1 = queue pixels)
  *   s4 = active_line_buf        (BIOS_CORE1_LINE_A or BIOS_CORE1_LINE_B)
  *   s5 = BIOS_CORE1_CMD_LIST    (0x200810A0: base of Bank 9 HSTX cmd lists)
- *   s6 = VIDEO_FRAMEBUF_BASE    (0x20074000)
+ *   s6 = VIDEO_FRAMEBUF_BASE    (0x20072000)
  *   s7 = BIOS_VSYNC_COUNT_ADDR  (0x50100500)
- *   s8  = VIDEO_FONT_RAM_BASE   (0x2007D600)
- *   s9  = VIDEO_TEXT_BUF_BASE   (0x2007DE00)
+ *   s8  = VIDEO_FONT_RAM_BASE   (0x2007B600)
+ *   s9  = VIDEO_TEXT_BUF_BASE   (0x2007BE00)
  *   s10 = active_oam_base       (BIOS_CORE1_OAM_LATCH or VIDEO_SPRITE_OAM_BASE)
- *   s11 = VIDEO_SPRITE_PAT_BASE (0x2007F180)
+ *   s11 = VIDEO_SPRITE_PAT_BASE (0x2007E440)
  * ============================================================================ */
 .p2align 2
 .type core1_video_entry, @function
@@ -433,18 +435,34 @@ compose_fb_loop:
     addi    a3, s5, CMD_BEHIND_LIST_OFF     /* Bank 9 enabled behind-text list */
     call    core1_draw_sprite_list
 
-    /* Layer 3: TEXT_BUF / FONT_RAM 4-column word-wise OR-compositing onto s4 */
-    li      t3, VIDEO_STRIDE_BYTES
+    /* Layer 3: TEXT_BUF / FONT_RAM + TEXT_ATTR 4-column word-wise compositing:
+     *   out = bg | (glyph ^ attr_mask ^ cursor_mask)
+     * If the hardware cursor is active on this text row, snapshot its pre-text
+     * bg byte so Layer 3b can recomposite that single cell cleanly. */
     srli    t4, a5, 3                       /* text_row = y >> 3 (0..59) */
-    mul     a1, t4, t3
-    add     a1, s9, a1                      /* a1 = &TEXT_BUF[text_row * 80] */
+    lw      t1, CMD_CURSOR_ROW_OFF(s5)      /* latched cursor row or -1 */
+    bne     t4, t1, 1f
+    lw      t2, CMD_CURSOR_COL_OFF(s5)      /* latched cursor col (0..79) */
+    add     t2, s4, t2
+    lbu     t2, 0(t2)
+    sb      t2, CMD_CURSOR_BG_OFF(s5)
+1:
+    li      t3, VIDEO_STRIDE_BYTES
+    mul     t1, t4, t3                      /* row_off = text_row * 80 */
+    add     a1, s9, t1                      /* a1 = &TEXT_BUF[text_row * 80] */
+    li      a6, VIDEO_TEXT_ATTR_BASE
+    add     a6, a6, t1                      /* a6 = &TEXT_ATTR[text_row * 80] */
     andi    t4, a5, 7                       /* glyph_row = y & 7 (0..7) */
     add     a2, s8, t4                      /* a2 = &FONT_RAM[0 + (y & 7)] */
     mv      a3, s4                          /* a3 = dst Bank 9 buffer */
     addi    a4, s4, VIDEO_STRIDE_BYTES      /* a4 = dst end (+80) */
+    li      a7, 0x01010101                  /* bit-0 reverse mask for 4 cells */
+    li      a0, 0xFF                        /* SWAR 0x01 -> 0xFF multiplier */
 compose_text_word_loop:
     lw      t3, 0(a1)                       /* 4 TEXT_BUF cells [c3|c2|c1|c0] */
-    beqz    t3, compose_text_next4          /* Fast skip: 4 transparent cells */
+    lw      t5, 0(a6)                       /* 4 TEXT_ATTR cells [a3|a2|a1|a0] */
+    and     t5, t5, a7                      /* Isolate bit 0 of each attr byte */
+    beqz    t3, compose_text_zero_chars     /* Fast path: 4 empty glyph cells */
 
     andi    t4, t3, 0xFF
     slli    t4, t4, 3
@@ -474,23 +492,54 @@ compose_text_word_loop:
     slli    t4, t4, 24
     or      t0, t0, t4
 
+    mul     t5, t5, a0                      /* Expand 0x01 -> 0xFF per reversed cell */
+    xor     t0, t0, t5                      /* Invert reversed glyphs before OR */
     lw      t4, 0(a3)
-    or      t4, t4, t0
+    or      t4, t4, t0                      /* OR-composite text onto line */
     sw      t4, 0(a3)
 compose_text_next4:
     addi    a1, a1, 4
+    addi    a6, a6, 4
     addi    a3, a3, 4
     bltu    a3, a4, compose_text_word_loop
+    j       compose_text_done
 
-    /* Layer 3b: Non-destructive hardware text cursor inversion (^ 0xFF) */
+compose_text_zero_chars:
+    beqz    t5, compose_text_next4          /* Fast skip: 4 empty & normal cells */
+    mul     t5, t5, a0                      /* Expand 0x01 -> 0xFF per reversed cell */
+    lw      t4, 0(a3)
+    or      t4, t4, t5                      /* OR-composite reversed blank cells */
+    sw      t4, 0(a3)
+    j       compose_text_next4
+
+compose_text_done:
+
+    /* Layer 3b: Non-destructive hardware text cursor (bg | (glyph ^ attr ^ 0xFF)).
+     * Composes via XOR with TEXT_ATTR reverse before ORing onto the saved
+     * pre-text bg byte, so cursor/reverse apply only to the text layer. */
     srli    t0, a5, 3                       /* text_row = y >> 3 (0..59) */
     lw      t1, CMD_CURSOR_ROW_OFF(s5)      /* latched cursor row or -1 */
     bne     t0, t1, compose_cursor_done
     lw      t2, CMD_CURSOR_COL_OFF(s5)      /* latched cursor col (0..79) */
-    add     t2, s4, t2                      /* &line_buf[cursor_col] */
-    lbu     t3, 0(t2)
-    xori    t3, t3, 0xFF
-    sb      t3, 0(t2)
+    li      t3, VIDEO_STRIDE_BYTES
+    mul     t0, t0, t3
+    add     t0, t0, t2                      /* cell_idx = text_row * 80 + col */
+    add     t1, s9, t0
+    lbu     t1, 0(t1)                       /* ch = TEXT_BUF[cell_idx] */
+    slli    t1, t1, 3
+    add     t1, t1, a2                      /* &FONT_RAM[ch * 8 + (y & 7)] */
+    lbu     t1, 0(t1)                       /* glyph_byte */
+    li      t3, VIDEO_TEXT_ATTR_BASE
+    add     t3, t3, t0
+    lbu     t3, 0(t3)                       /* attr = TEXT_ATTR[cell_idx] */
+    andi    t3, t3, TEXT_ATTR_REVERSE
+    bnez    t3, 2f                          /* attr=1 ^ cursor=1 -> normal glyph */
+    xori    t1, t1, 0xFF                    /* attr=0 ^ cursor=1 -> inverted glyph */
+2:
+    lbu     t3, CMD_CURSOR_BG_OFF(s5)       /* saved pre-text bg byte */
+    or      t1, t3, t1
+    add     t2, s4, t2
+    sb      t1, 0(t2)
 compose_cursor_done:
 
     /* Layer 4: In-front sprites (BEHIND_TEXT = 0, Slot 15 -> Slot 0) */
@@ -688,7 +737,7 @@ core1_draw_sprite_list:
     sw      a5, 8(sp)
 
     li      a6, SPRITE_HEIGHT               /* 16 */
-    li      a7, SPRITE_PAT_COUNT            /* 58 */
+    li      a7, SPRITE_PAT_COUNT            /* 111 */
     /* Determine expected BEHIND_TEXT bit from list_ptr (behind vs front) */
     addi    t2, s5, CMD_BEHIND_LIST_OFF
     li      t1, 0
@@ -722,7 +771,7 @@ spr_slot_loop:
     li      t3, VIDEO_WIDTH
     bge     t2, t3, spr_next_slot
 
-    /* Pattern index bounds check (0..57) */
+    /* Pattern index bounds check (0..110) */
     lbu     t3, SPRITE_OAM_OFF_PAT(a4)
     bgeu    t3, a7, spr_next_slot
 

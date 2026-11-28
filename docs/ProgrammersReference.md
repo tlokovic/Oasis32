@@ -41,7 +41,7 @@ This manual is self-contained for all Oasis32-specific behavior—including memo
 ### Document Conventions
 
 * **Byte Order & Data Sizes:** Oasis32 is **little-endian** (the least significant byte of a multi-byte value is stored at the lowest memory address). Throughout this manual, a *byte* is 8 bits (`uint8_t`/`int8_t`), a *halfword* is 16 bits (`uint16_t`/`int16_t`), a *word* is 32 bits (`uint32_t`/`int32_t`), and a *doubleword* is 64 bits.
-* **Numeric Notation:** Hexadecimal numbers use the `0x` prefix; underscores (such as `0x2007_4000`) are used in prose and tables for readability and are omitted in assembly/header literals. Binary values use the `0b` prefix. Unprefixed numbers are decimal.
+* **Numeric Notation:** Hexadecimal numbers use the `0x` prefix; underscores (such as `0x2007_2000`) are used in prose and tables for readability and are omitted in assembly/header literals. Binary values use the `0b` prefix. Unprefixed numbers are decimal.
 * **Bit Numbering & Field Notation:** `bit 0` is always the least significant bit (LSB). Multi-bit fields are written `bits [hi:lo]` inclusive (for example, `bits [7:0]` is the low byte of a 32-bit word).
 * **Address & Value Ranges:** Ranges written `A`–`B` or `A..B` are **inclusive** of both endpoints. Half-open intervals written `[A, B)` include `A` and exclude `B`.
 * **Register Names:** General-purpose registers are referred to by their standard RISC-V ABI names (`zero`, `ra`, `sp`, `gp`, `tp`, `t0–t6`, `s0–s11`, `a0–a7`).
@@ -94,13 +94,13 @@ From a programmer's perspective, Oasis32 is a clean, self-contained microcompute
 │           512 KB Public SRAM           │   │    Resident System ROM (BIOS)    │
 │                                        │   │                                  │
 │  ┌──────────────────────────────────┐  │   │  • System Control & OS Hook      │
-│  │ User SRAM (464 KB)               │  │   │  • Serial Port                   │
+│  │ User SRAM (456 KB)               │  │   │  • Serial Port                   │
 │  │ Code, Data, Heap, Stack          │  │   │  • Keyboard & Mouse (Buffered)   │
 │  └──────────────────────────────────┘  │   │  • SD Card Storage (512 B LBA)   │
 │                                        │   │  • Monotonic 64-bit Timer (1 us) │
 │  ┌──────────────────────────────────┐  │   │  • Piezo Audio (16–20,000 Hz)    │
-│  │ Public Video RAM (48 KB)         │  │   │  • Status LEDs (Red/Green/Blue)  │
-│  │ Bitmap, Font, Text Overlay,      │◀─┼──▶│  • Video Sync & Font Reset       │
+│  │ Public Video RAM (56 KB)         │  │   │  • Status LEDs (Red/Green/Blue)  │
+│  │ Bitmap, Font, Text & Attr,       │◀─┼──▶│  • Video Sync & Font Reset       │
 │  │ Control, & Hardware Sprites      │  │   │  • Text Console & Blink Cursor   │
 │  └──────────────────┬───────────────┘  │   └──────────────────────────────────┘
 └─────────────────────┼──────────────────┘
@@ -117,9 +117,9 @@ From a programmer's perspective, Oasis32 is a clean, self-contained microcompute
 
 | Subsystem | Capabilities | Access Interface |
 |:---|:---|:---|
-| **User Memory** | 464 KB contiguous read/write/execute SRAM (§2.2). | Direct load/store & instruction fetch |
-| **Display & Sprites** | 640×480 @ 60 Hz monochrome bitmap, 80×60 OR-composited text overlay, programmable 256-glyph 8×8 CP437 font, 16 masked 16×16 hardware sprites (58 patterns). | Direct load/store to Video RAM (§2.3, §5) + `BIOS_BLK_VIDEO` (`0x20`) |
-| **Text Console** | Managed 80×60 cursor, character/string output with `\n`/`\r`/`\b`, line wrap, auto-scroll, manual scroll, and non-destructive hardware blinking cursor. | `BIOS_BLK_TEXT` (`0x80`) |
+| **User Memory** | 456 KB contiguous read/write/execute SRAM (§2.2). | Direct load/store & instruction fetch |
+| **Display & Sprites** | 640×480 @ 60 Hz monochrome bitmap, 80×60 OR-composited text overlay with per-cell reverse attributes, programmable 256-glyph 8×8 CP437 font, 16 masked 16×16 hardware sprites (111 patterns). | Direct load/store to Video RAM (§2.3, §5) + `BIOS_BLK_VIDEO` (`0x20`) |
+| **Text Console** | Managed 80×60 cursor, character/string output with `\n`/`\r`/`\b`, per-cell reverse attributes, line wrap, auto-scroll, manual scroll, and non-destructive hardware blinking cursor. | `BIOS_BLK_TEXT` (`0x80`) |
 | **Keyboard** | Interrupt-buffered 32-event queue, hardware-independent keycodes, modifier tracking, 6-key state snapshot, US ASCII translation, configurable typematic repeat. | `BIOS_BLK_INPUT` (`0x30`–`0x36`) |
 | **Mouse** | Screen-space tracking (`0..639 × 0..479`), separate 16-event motion/wheel and button queues, live state snapshot, and coordinate warping. | `BIOS_BLK_INPUT` (`0x38`–`0x3F`) |
 | **Removable Storage** | Raw 512-byte LBA sector read/write, capacity query, and debounced hot-swap card detection. | `BIOS_BLK_SD` (`0x40`) |
@@ -179,25 +179,26 @@ If Oasis32 software triggers a synchronous processor exception other than `ecall
 
 ### 2.1 Address Space Overview
 
-Oasis32 exposes a single contiguous **512 KB** (`524,288` bytes) public RAM window spanning `0x2000_0000`–`0x2007_FFFF`, divided into **464 KB of User SRAM** and **48 KB of Public Video RAM**. Every address outside this window is reserved and off-limits to Oasis32 software.
+Oasis32 exposes a single contiguous **512 KB** (`524,288` bytes) public RAM window spanning `0x2000_0000`–`0x2007_FFFF`, divided into **456 KB of User SRAM** and **56 KB of Public Video RAM**. Every address outside this window is reserved and off-limits to Oasis32 software.
 
 ```text
 0xFFFF_FFFF ┌──────────────────────────────────────────────────────────────┐
             │  Reserved / Off-Limits                                       │
 0x2008_0000 ╞══════════════════════════════════════════════════════════════╡
-            │  Public Video Memory Block — 48 KB (49,152 B), R/W Data      │
-            │    0x2007_F180–0x2007_FFFF   SPRITE_PAT  (3,712 B)           │
-            │    0x2007_F100–0x2007_F17F   SPRITE_OAM    (128 B)           │
-            │    0x2007_F0C0–0x2007_F0FF   VIDEO_CTRL     (64 B)           │
-            │    0x2007_DE00–0x2007_F0BF   TEXT_BUF    (4,800 B)           │
-            │    0x2007_D600–0x2007_DDFF   FONT_RAM    (2,048 B)           │
-            │    0x2007_4000–0x2007_D5FF   FRAMEBUF   (38,400 B)           │
-0x2007_4000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_STACK_TOP / VIDEO_RAM_BASE
+            │  Public Video Memory Block — 56 KB (57,344 B), R/W Data      │
+            │    0x2007_E440–0x2007_FFFF   SPRITE_PAT  (7,104 B)           │
+            │    0x2007_E3C0–0x2007_E43F   SPRITE_OAM    (128 B)           │
+            │    0x2007_E380–0x2007_E3BF   VIDEO_CTRL     (64 B)           │
+            │    0x2007_D0C0–0x2007_E37F   TEXT_ATTR   (4,800 B)           │
+            │    0x2007_BE00–0x2007_D0BF   TEXT_BUF    (4,800 B)           │
+            │    0x2007_B600–0x2007_BDFF   FONT_RAM    (2,048 B)           │
+            │    0x2007_2000–0x2007_B5FF   FRAMEBUF   (38,400 B)           │
+0x2007_2000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_STACK_TOP / VIDEO_RAM_BASE
             │                                                              │
-            │  User SRAM — 464 KB (475,136 B), R/W/X                       │
+            │  User SRAM — 456 KB (466,944 B), R/W/X                       │
             │    • Program code (.text), constants (.rodata), data (.data) │
             │    • Uninitialized globals (.bss) and dynamic heap (↑)       │
-            │    • Program stack (starts at 0x2007_4000, grows ↓)          │
+            │    • Program stack (starts at 0x2007_2000, grows ↓)          │
             │                                                              │
 0x2000_0000 ╞══════════════════════════════════════════════════════════════╡ ◀ USER_RAM_BASE
             │  Reserved / Off-Limits                                       │
@@ -209,31 +210,31 @@ Oasis32 exposes a single contiguous **512 KB** (`524,288` bytes) public RAM wind
 | Region | Symbolic Constants | Address Range (Incl.) | Size (Bytes) | Size (Hex) | Permitted Access |
 |:---|:---|:---|---:|---:|:---|
 | **Reserved (Low)** | — | `0x0000_0000`–`0x1FFF_FFFF` | — | — | **Prohibited** |
-| **User SRAM** | `USER_RAM_BASE` .. `USER_RAM_END` | `0x2000_0000`–`0x2007_3FFF` | `475,136` | `0x0007_4000` | Read / Write / Execute |
-| **Public Video RAM** | `VIDEO_RAM_BASE` .. `VIDEO_RAM_END` | `0x2007_4000`–`0x2007_FFFF` | `49,152` | `0x0000_C000` | Read / Write (Data Only) |
+| **User SRAM** | `USER_RAM_BASE` .. `USER_RAM_END` | `0x2000_0000`–`0x2007_1FFF` | `466,944` | `0x0007_2000` | Read / Write / Execute |
+| **Public Video RAM** | `VIDEO_RAM_BASE` .. `VIDEO_RAM_END` | `0x2007_2000`–`0x2007_FFFF` | `57,344` | `0x0000_E000` | Read / Write (Data Only) |
 | **Reserved (High)** | — | `0x2008_0000`–`0xFFFF_FFFF` | — | — | **Prohibited** |
 
 All symbolic memory-map constants are defined in `include/abi/memory_map.h`. Software should reference these constants rather than hardcoding raw addresses.
 
 ### 2.2 User SRAM (`USER_RAM_BASE`–`USER_RAM_END`)
 
-User SRAM is a flat, contiguous **464 KB** (`475,136` bytes) read/write/execute memory region owned entirely by the loaded program. The Resident System ROM keeps all internal driver state and background interrupt stacks outside User SRAM, leaving 100% of this window available for application or OS use.
+User SRAM is a flat, contiguous **456 KB** (`466,944` bytes) read/write/execute memory region owned entirely by the loaded program. The Resident System ROM keeps all internal driver state and background interrupt stacks outside User SRAM, leaving 100% of this window available for application or OS use.
 
 | Constant (`include/abi/memory_map.h`) | Value | Meaning |
 |:---|:---|:---|
 | `USER_RAM_BASE` | `0x2000_0000` | Inclusive start of User SRAM (default program load base). |
-| `USER_RAM_SIZE` | `0x0007_4000` | Total size in bytes (`475,136` bytes = 464 KB). |
-| `USER_RAM_END` | `0x2007_3FFF` | Inclusive last byte of User SRAM. |
-| `USER_STACK_TOP` | `0x2007_4000` | Exclusive upper bound; initial `sp` value on program entry. |
+| `USER_RAM_SIZE` | `0x0007_2000` | Total size in bytes (`466,944` bytes = 456 KB). |
+| `USER_RAM_END` | `0x2007_1FFF` | Inclusive last byte of User SRAM. |
+| `USER_STACK_TOP` | `0x2007_2000` | Exclusive upper bound; initial `sp` value on program entry. |
 
 #### Conventional Program Layout
 
 Programs linked with the standard Oasis32 linker script (§2.4) organize User SRAM from low to high addresses, with the stack growing downward from the top:
 
 ```text
-0x2007_4000  ── USER_STACK_TOP (= VIDEO_RAM_BASE) ──
+0x2007_2000  ── USER_STACK_TOP (= VIDEO_RAM_BASE) ──
              │  User Stack (grows ↓)                │
-             │    • Initialized to 0x2007_4000      │
+             │    • Initialized to 0x2007_2000      │
              │    • 16-byte aligned (ILP32)         │
              │                                      │
              │         (Free RAM / Unallocated)     │
@@ -253,34 +254,35 @@ Programs are not forced to use a heap or even start at `0x2000_0000`—an OS loa
 #### Alignment Requirements
 * **Data Accesses:** Halfword (`lh`/`lhu`/`sh`) accesses must be 2-byte aligned and word (`lw`/`sw`/`amo*`) accesses must be 4-byte aligned. Misaligned loads or stores raise a synchronous trap (`mcause = 0x4` or `0x6`; §1.4).
 * **Instruction Fetch:** Because the `C` extension is enabled, instruction addresses must be 2-byte aligned (standard 32-bit instructions may begin on any 2-byte boundary).
-* **Stack Alignment:** Per `ILP32`, `sp` must remain **16-byte aligned** at function calls and `ecall` boundaries. `USER_STACK_TOP` (`0x2007_4000`) satisfies this requirement on entry.
+* **Stack Alignment:** Per `ILP32`, `sp` must remain **16-byte aligned** at function calls and `ecall` boundaries. `USER_STACK_TOP` (`0x2007_2000`) satisfies this requirement on entry.
 
 #### Stack Headroom, Overflow & Underflow
 
 Because Oasis32 has no virtual memory or hardware guard pages, stack bounds are not checked in hardware:
 
 * **Stack Overflow (`sp` grows downward into `.bss`/heap/code):** Silently corrupts static variables, heap allocations, or program instructions. A hardware access fault (`mcause = 0x5`/`0x7`) only triggers if `sp` under-runs past `0x2000_0000` into the low reserved region.
-* **Stack Underflow (`sp` pops above `USER_STACK_TOP`):** Because `VIDEO_RAM_BASE` begins immediately at `0x2007_4000`, writing above `USER_STACK_TOP` silently overwrites the top of `FRAMEBUF`—often appearing as stray lit pixels along the top-left scanlines of the display.
+* **Stack Underflow (`sp` pops above `USER_STACK_TOP`):** Because `VIDEO_RAM_BASE` begins immediately at `0x2007_2000`, writing above `USER_STACK_TOP` silently overwrites the top of `FRAMEBUF`—often appearing as stray lit pixels along the top-left scanlines of the display.
 * **`ecall` Stack Usage:** Background interrupts never touch the user stack (§1.4), but synchronous `ecall` invocations temporarily use a small frame on the caller's stack (§4.1). Ensure `sp` points into valid User SRAM with adequate headroom before executing `ecall`.
 
 ### 2.3 Public Video Memory Block (`VIDEO_RAM_BASE`–`VIDEO_RAM_END`)
 
-Public Video RAM is a contiguous **48 KB** (`49,152` bytes) read/write, data-only memory block spanning `0x2007_4000`–`0x2007_FFFF` (`VIDEO_RAM_BASE`..`VIDEO_RAM_END`, size `VIDEO_RAM_SIZE = 0x0000_C000`). It is partitioned with zero interior padding into six fixed buffers continuously scanned out at 60 Hz by the display subsystem.
+Public Video RAM is a contiguous **56 KB** (`57,344` bytes) read/write, data-only memory block spanning `0x2007_2000`–`0x2007_FFFF` (`VIDEO_RAM_BASE`..`VIDEO_RAM_END`, size `VIDEO_RAM_SIZE = 0x0000_E000`). It is partitioned with zero interior padding into seven fixed buffers continuously scanned out at 60 Hz by the display subsystem.
 
 | Sub-Region | Symbolic Constants (`memory_map.h`) | Address Range (Incl.) | Size (Bytes) | Size (Hex) | Alignment | Role & Spec |
 |:---|:---|:---|---:|---:|:---:|:---|
-| **Bitmap Framebuffer** | `VIDEO_FRAMEBUF_BASE` .. `VIDEO_FRAMEBUF_END`<br>`VIDEO_FRAMEBUF_SIZE` | `0x2007_4000`–`0x2007_D5FF` | `38,400` | `0x0000_9600` | 4 KB | 640×480 1 bpp bitmap (80 B/scanline). See §5.2. |
-| **Programmable Font** | `VIDEO_FONT_RAM_BASE` .. `VIDEO_FONT_RAM_END`<br>`VIDEO_FONT_RAM_SIZE` | `0x2007_D600`–`0x2007_DDFF` | `2,048` | `0x0000_0800` | 512 B | 256 × 8-byte 8×8 glyphs (glyph-major, CP437 default). See §5.3. |
-| **Text Overlay Grid** | `VIDEO_TEXT_BUF_BASE` .. `VIDEO_TEXT_BUF_END`<br>`VIDEO_TEXT_BUF_SIZE` | `0x2007_DE00`–`0x2007_F0BF` | `4,800` | `0x0000_12C0` | 512 B | 80×60 character cell grid, OR-composited over `FRAMEBUF`. See §5.3, §6.9. |
-| **Video Control Block** | `VIDEO_CTRL_BASE` .. `VIDEO_CTRL_END`<br>`VIDEO_CTRL_SIZE` | `0x2007_F0C0`–`0x2007_F0FF` | `64` | `0x0000_0040` | 64 B | Display control flags (`LATCH_OAM` at `+0x00`; rest reserved). See §5.4.4. |
-| **Sprite OAM Table** | `VIDEO_SPRITE_OAM_BASE` .. `VIDEO_SPRITE_OAM_END`<br>`VIDEO_SPRITE_OAM_SIZE` | `0x2007_F100`–`0x2007_F17F` | `128` | `0x0000_0080` | 256 B | 16 hardware sprite descriptors (8 B each). See §5.4.2. |
-| **Sprite Pattern RAM** | `VIDEO_SPRITE_PAT_BASE` .. `VIDEO_SPRITE_PAT_END`<br>`VIDEO_SPRITE_PAT_SIZE` | `0x2007_F180`–`0x2007_FFFF` | `3,712` | `0x0000_0E80` | 128 B | 58 masked 16×16 2-plane sprite patterns (64 B each). See §5.4.1. |
+| **Bitmap Framebuffer** | `VIDEO_FRAMEBUF_BASE` .. `VIDEO_FRAMEBUF_END`<br>`VIDEO_FRAMEBUF_SIZE` | `0x2007_2000`–`0x2007_B5FF` | `38,400` | `0x0000_9600` | 8 KB | 640×480 1 bpp bitmap (80 B/scanline). See §5.2. |
+| **Programmable Font** | `VIDEO_FONT_RAM_BASE` .. `VIDEO_FONT_RAM_END`<br>`VIDEO_FONT_RAM_SIZE` | `0x2007_B600`–`0x2007_BDFF` | `2,048` | `0x0000_0800` | 512 B | 256 × 8-byte 8×8 glyphs (glyph-major, CP437 default). See §5.3. |
+| **Text Overlay Grid** | `VIDEO_TEXT_BUF_BASE` .. `VIDEO_TEXT_BUF_END`<br>`VIDEO_TEXT_BUF_SIZE` | `0x2007_BE00`–`0x2007_D0BF` | `4,800` | `0x0000_12C0` | 512 B | 80×60 character cell grid, OR-composited over `FRAMEBUF`. See §5.3, §6.9. |
+| **Text Attribute Grid** | `VIDEO_TEXT_ATTR_BASE` .. `VIDEO_TEXT_ATTR_END`<br>`VIDEO_TEXT_ATTR_SIZE` | `0x2007_D0C0`–`0x2007_E37F` | `4,800` | `0x0000_12C0` | 64 B | 80×60 per-cell attribute grid (bit `0` = reverse `^ 0xFF`, bits `7:1` = `0`). See §5.3, §6.9. |
+| **Video Control Block** | `VIDEO_CTRL_BASE` .. `VIDEO_CTRL_END`<br>`VIDEO_CTRL_SIZE` | `0x2007_E380`–`0x2007_E3BF` | `64` | `0x0000_0040` | 128 B | Display control flags (`LATCH_OAM` at `+0x00`; rest reserved). See §5.4.4. |
+| **Sprite OAM Table** | `VIDEO_SPRITE_OAM_BASE` .. `VIDEO_SPRITE_OAM_END`<br>`VIDEO_SPRITE_OAM_SIZE` | `0x2007_E3C0`–`0x2007_E43F` | `128` | `0x0000_0080` | 64 B | 16 hardware sprite descriptors (8 B each). See §5.4.2. |
+| **Sprite Pattern RAM** | `VIDEO_SPRITE_PAT_BASE` .. `VIDEO_SPRITE_PAT_END`<br>`VIDEO_SPRITE_PAT_SIZE` | `0x2007_E440`–`0x2007_FFFF` | `7,104` | `0x0000_1BC0` | 64 B | 111 masked 16×16 2-plane sprite patterns (64 B each). See §5.4.1. |
 
 #### Access Rules & Concurrency Notes
-* **Standard Read/Write Data RAM:** All six sub-regions support normal byte, halfword, and word loads and stores (subject to the natural alignment rules in §2.2). Programs may read back their own writes at any time. Public Video RAM is strictly data-only—never branch to or execute instructions from it (§1.3).
-* **Live Scanout Visibility:** Writes to `FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`, and `SPRITE_PAT` are observed directly by the display scanner on subsequent scanlines. For tear-free updates, synchronize writes with `BIOS_VIDEO_WAIT_VSYNC` (§5.5). By contrast, `SPRITE_OAM` is latched once per frame during VBLANK by default (`VIDEO_CTRL_LATCH_OAM_BIT = 1`; §5.4.4).
+* **Standard Read/Write Data RAM:** All seven sub-regions support normal byte, halfword, and word loads and stores (subject to the natural alignment rules in §2.2). Programs may read back their own writes at any time. Public Video RAM is strictly data-only—never branch to or execute instructions from it (§1.3).
+* **Live Scanout Visibility:** Writes to `FRAMEBUF`, `FONT_RAM`, `TEXT_BUF`, `TEXT_ATTR`, and `SPRITE_PAT` are observed directly by the display scanner on subsequent scanlines. For tear-free updates, synchronize writes with `BIOS_VIDEO_WAIT_VSYNC` (§5.5). By contrast, `SPRITE_OAM` is latched once per frame during VBLANK by default (`VIDEO_CTRL_LATCH_OAM_BIT = 1`; §5.4.4).
 * **Reserved `VIDEO_CTRL` Bytes:** Only `VIDEO_CTRL_FLAGS_OFF` (`+0x00`, bit 0) is defined in BIOS ABI `0.1.0`. Leave bytes `+0x01..+0x3F` untouched (or zero) for forward compatibility.
-* **BIOS Coexistence:** `BIOS_BLK_TEXT` services (§6.9) operate directly on `TEXT_BUF`, and `BIOS_VIDEO_RESET_FONT` (§6.3) reloads `FONT_RAM`. Programs may freely mix direct writes to Video RAM with BIOS video/text calls.
+* **BIOS Coexistence:** `BIOS_BLK_TEXT` services (§6.9) operate directly on `TEXT_BUF` and `TEXT_ATTR`, and `BIOS_VIDEO_RESET_FONT` (§6.3) reloads `FONT_RAM`. Programs may freely mix direct writes to Video RAM with BIOS video/text calls.
 
 ### 2.4 Linking Against the Memory Map (`memory_map.h` & `sd_payload.ld.S`)
 
@@ -305,7 +307,7 @@ Oasis32 provides a shared linker script template, `include/ld/sd_payload.ld.S`, 
 | `__payload_size` | `__payload_end - __payload_start` | Loaded payload byte length (written into the `"OA32"` header). |
 | `__bss_start` | Start of `.bss` (4-byte aligned) | Inclusive start of uninitialized globals to be zeroed by `_start`. |
 | `__bss_end` | End of `.bss` (4-byte aligned) | Exclusive end of `.bss`; also the natural base for an upward-growing heap. |
-| `__stack_top` | `USER_STACK_TOP` (`0x2007_4000`) | Top of the user stack (16-byte aligned). |
+| `__stack_top` | `USER_STACK_TOP` (`0x2007_2000`) | Top of the user stack (16-byte aligned). |
 
 Programs with specialized layouts are free to use a custom linker script instead of `sd_payload.ld.S`. Any image booted directly by the BIOS must satisfy User SRAM bounds (§2.2) and the `"OA32"` header format (§3.1); executables loaded later by an OS—or stored on non-bootable disks—may use any format the OS defines, provided they execute within User SRAM (§2.2). For the exact preprocessing, CMake, and CLI commands used to build `.oa32` images, see §7.1–§7.2.
 
@@ -372,7 +374,7 @@ Immediately after validating the `"OA32"` header, loading the payload into `[loa
 | Resource | Guaranteed State at Entry |
 |:---|:---|
 | **`pc`** | `entry_addr` from the `"OA32"` header (2-byte aligned, within User SRAM). |
-| **`sp` (`x2`)** | `USER_STACK_TOP` (`0x2007_4000`), 16-byte aligned per `ILP32` (§2.2). |
+| **`sp` (`x2`)** | `USER_STACK_TOP` (`0x2007_2000`), 16-byte aligned per `ILP32` (§2.2). |
 | **`zero` (`x0`)** | Hardwired `0`. |
 | **All other GPRs** (`ra`, `gp`, `tp`, `t0–t6`, `s0–s11`, `a0–a7`) | **Unspecified.** Programs must initialize any registers they depend on—including `gp`/`tp` if used—and must **not** treat `ra` as a valid return address (entry is a one-way jump; see §3.4). |
 | **Instruction Coherence** | `fence.i` has already been executed after payload loading, so all instructions in `[load_addr, load_addr + payload_size)` are immediately visible to instruction fetch. |
@@ -391,10 +393,10 @@ Before jumping to `entry_addr`, the bootloader resets all user-visible display, 
 |:---|:---|
 | **Bitmap Framebuffer (`FRAMEBUF`)** | Zero-filled (`0x00`; all 640×480 pixels black). |
 | **Programmable Font (`FONT_RAM`)** | Default 256-glyph 8×8 IBM Code Page 437 font loaded (equivalent to `BIOS_VIDEO_RESET_FONT`). |
-| **Text Overlay (`TEXT_BUF`)** | Zero-filled (`0x00`; all 80×60 cells transparent). |
-| **Text Console Cursor** | Positioned at `(col = 0, row = 0)`, hidden (`vis = 0`, `blink = 0`). |
+| **Text Overlay (`TEXT_BUF`, `TEXT_ATTR`)** | Zero-filled (`0x00`; all 80×60 cells transparent and normal polarity). |
+| **Text Console Cursor & Attribute** | Positioned at `(col = 0, row = 0)`, hidden (`vis = 0`, `blink = 0`); current text attribute set to `TEXT_ATTR_NORMAL` (`0x00`). |
 | **Video Control (`VIDEO_CTRL`)** | `VIDEO_CTRL_FLAGS_OFF` (`+0x00`) = `VIDEO_CTRL_LATCH_OAM_BIT` (`0x01`, frame-latched OAM mode enabled); reserved bytes `+0x01..+0x3F` = `0x00`. |
-| **Hardware Sprites (`SPRITE_OAM`, `SPRITE_PAT`)** | Zero-filled (`0x00`; all 16 sprite slots disabled and all 58 patterns blank). |
+| **Hardware Sprites (`SPRITE_OAM`, `SPRITE_PAT`)** | Zero-filled (`0x00`; all 16 sprite slots disabled and all 111 patterns blank). |
 | **Keyboard** | Event queue flushed (empty); typematic repeat restored to boot defaults (`delay = 500 ms`, `rate = 50 ms`). Live state (`BIOS_KEYBOARD_STATE`) reflects keys physically held at entry. |
 | **Mouse** | Motion/wheel and button event queues flushed (empty); screen-space position centered at `(320, 240)`. Live button mask (`BIOS_MOUSE_STATE`) reflects buttons physically held at entry. |
 | **Audio (Piezo Buzzer)** | Silenced (`AUDIO_FREQ_OFF = 0`). |
@@ -523,7 +525,7 @@ Within the Resident BIOS range, service IDs are grouped into **16-ID subsystem b
 | `0x50`–`0x5F` | `BIOS_BLK_TIME` (`0x50`) | Monotonic Timer | `0x50` | §6.6 |
 | `0x60`–`0x6F` | `BIOS_BLK_AUDIO` (`0x60`) | Piezo Audio | `0x60` | §6.7 |
 | `0x70`–`0x7F` | `BIOS_BLK_LED` (`0x70`) | Status LEDs | `0x70`–`0x71` | §6.8 |
-| `0x80`–`0x8F` | `BIOS_BLK_TEXT` (`0x80`) | Text Console | `0x80`–`0x87` | §6.9 |
+| `0x80`–`0x8F` | `BIOS_BLK_TEXT` (`0x80`) | Text Console | `0x80`–`0x89` | §6.9 |
 | `0x90`–`0xFF` | — | Reserved (Future BIOS) | None | — |
 
 Any unassigned ID—whether a spare slot inside an active block (such as `0x37` or `0x03`–`0x0F`) or an ID in `0x90`–`0xFF`—is guaranteed to return `ERR_UNSUPPORTED` (`-1`). For a consolidated single-table cheat sheet of all defined services, see Appendix C.
@@ -536,7 +538,7 @@ An operating system or resident runtime loaded into User SRAM can expose its own
 
 Call `BIOS_SYS_SET_OS_ECALL_HANDLER` (`a7 = 0x02`; see §6.1) with the handler's entry address in `a0`:
 
-* **Install Handler (`a0 != 0`):** The pointer must be **2-byte aligned** (`(fn_ptr & 1) == 0`) and lie within User SRAM (`USER_RAM_BASE <= fn_ptr <= USER_STACK_TOP - 2`, i.e., `0x2000_0000`–`0x2007_3FFE`). If valid, the BIOS installs the handler and returns `ERR_OK` (`0`). If misaligned or out of bounds, the BIOS returns `ERR_INVALID_ARG` (`-2`) and leaves any previously registered handler unchanged.
+* **Install Handler (`a0 != 0`):** The pointer must be **2-byte aligned** (`(fn_ptr & 1) == 0`) and lie within User SRAM (`USER_RAM_BASE <= fn_ptr <= USER_STACK_TOP - 2`, i.e., `0x2000_0000`–`0x2007_1FFE`). If valid, the BIOS installs the handler and returns `ERR_OK` (`0`). If misaligned or out of bounds, the BIOS returns `ERR_INVALID_ARG` (`-2`) and leaves any previously registered handler unchanged.
 * **Clear Handler (`a0 = 0`):** Unregisters the OS handler and returns `ERR_OK` (`0`). Subsequent `ecall` calls with `a7 >= 0x0100` return `ERR_UNSUPPORTED` (`-1`), matching the clean boot state (§3.3).
 
 #### Handler Entry & Return Contract
@@ -570,7 +572,7 @@ Because the BIOS stores each active `ecall`'s return state on the **caller's sta
 
 ### 5.1 Unified Display Architecture
 
-Oasis32 drives a fixed **640×480 @ 60 Hz** 1-bit monochrome display (`VIDEO_WIDTH = 640`, `VIDEO_HEIGHT = 480`, `VIDEO_REFRESH_HZ = 60` in `include/abi/devices.h`). Scanout and compositing run continuously and autonomously with **zero CPU overhead**: software simply reads and writes the 48 KB Public Video RAM block (§2.3) and optionally paces updates with `BIOS_VIDEO_WAIT_VSYNC` (§5.5).
+Oasis32 drives a fixed **640×480 @ 60 Hz** 1-bit monochrome display (`VIDEO_WIDTH = 640`, `VIDEO_HEIGHT = 480`, `VIDEO_REFRESH_HZ = 60` in `include/abi/devices.h`). Scanout and compositing run continuously and autonomously with **zero CPU overhead**: software simply reads and writes the 56 KB Public Video RAM block (§2.3) and optionally paces updates with `BIOS_VIDEO_WAIT_VSYNC` (§5.5).
 
 Rather than providing separate "text" and "graphics" video modes, Oasis32 uses a **single unified display model** with zero mode switching. On every active scanline (`y = 0..479`), the display subsystem builds the 640-pixel output line through a deterministic **4-layer compositing pipeline**:
 
@@ -582,8 +584,9 @@ Rather than providing separate "text" and "graphics" video modes, Oasis32 uses a
                         • Active slots composited Slot 15 → Slot 0
                         │
                         ▼
-  Layer 3:           TEXT_BUF + FONT_RAM (80×60 8×8 glyph grid, OR-composited)
-                        • Plus non-destructive hardware text cursor (^ 0xFF)
+  Layer 3:           TEXT_BUF + FONT_RAM + TEXT_ATTR + Hardware Cursor
+                        • Glyph XOR'd with TEXT_ATTR reverse & cursor (^ 0xFF)
+                        • Resulting 8×8 text slice OR-composited onto scanline
                         │
                         ▼
   Layer 4 (Top):     In-Front Sprites (SPRITE_FLAG_BEHIND_TEXT = 0)
@@ -597,36 +600,36 @@ Rather than providing separate "text" and "graphics" video modes, Oasis32 uses a
 
 1. **Bitmap Framebuffer (`FRAMEBUF`):** Provides the base 640×480 1 bpp monochrome pixel canvas (`1` = white/lit, `0` = black/dark; §5.2).
 2. **Behind-Text Hardware Sprites (`BEHIND_TEXT = 1`):** Enabled 16×16 sprites with `SPRITE_FLAG_BEHIND_TEXT` set are composited over `FRAMEBUF` in **Slot 15 → Slot 0** order (lower slot index has higher visual priority) using each sprite's selected blend mode (Opaque, OR, or XOR; §5.4).
-3. **Text Overlay (`TEXT_BUF` / `FONT_RAM`) & Hardware Cursor:** For each 8-pixel character column, the glyph row indexed by `TEXT_BUF` in `FONT_RAM` is bitwise **`OR`-composited** onto the scanline (`line | glyph_byte`; §5.3). If the BIOS hardware text cursor is visible and currently in its "on" blink phase (§6.9), the active cell's 8-pixel slice is inverted (`^ 0xFF`) during scanout—leaving `TEXT_BUF` and `FONT_RAM` completely untouched.
+3. **Text Overlay (`TEXT_BUF` / `FONT_RAM`), `TEXT_ATTR` & Hardware Cursor:** For each 8-pixel character column, the glyph slice indexed by `TEXT_BUF` in `FONT_RAM` is optionally inverted (`^ 0xFF`) by bit `0` (`TEXT_ATTR_REVERSE`) of the corresponding `TEXT_ATTR` cell—even for blank `0x00` cells—and/or by the BIOS hardware text cursor when visible in its "on" blink phase (§6.9). Both inversions compose via XOR, so when the cursor is visible on a reversed cell the two inversions cancel out and the cell temporarily renders in normal polarity (keeping the cursor clearly visible over highlighted text). The resulting 8-pixel text slice is then bitwise **`OR`-composited** onto the scanline (`line | text_byte`; §5.3), leaving `TEXT_BUF`, `TEXT_ATTR`, and `FONT_RAM` untouched and never inverting underlying `FRAMEBUF` or behind-text sprite pixels.
 4. **In-Front Hardware Sprites (`BEHIND_TEXT = 0`):** Enabled 16×16 sprites with `SPRITE_FLAG_BEHIND_TEXT` clear are composited last in **Slot 15 → Slot 0** order. By convention, **Sprite 0** (`BEHIND_TEXT = 0`) floats above all graphics, text, and other sprites as a hardware mouse cursor (§5.4.3).
 
 #### Emergent Display Modes (Zero Mode Switching)
 
 Every classic microcomputer display configuration emerges naturally from this single pipeline:
 
-* **Pure Graphics Mode:** Leave `TEXT_BUF` zero-filled (`0x00`) and the hardware cursor hidden. Because default glyph `0x00` is all zeros (transparent), `line | 0x00 == line`, leaving `FRAMEBUF` (and any enabled sprites) completely unobstructed.
-* **Pure 80×60 Text Mode:** Leave `FRAMEBUF` zero-filled (`0x00`). Only glyphs from `TEXT_BUF` (plus the hardware cursor and any enabled sprites) are visible (`0x00 | glyph_byte == glyph_byte`).
-* **Non-Destructive Text-over-Graphics Overlay:** Draw scenes or vector/pixel graphics into `FRAMEBUF` while writing HUDs, menus, or console output into `TEXT_BUF` (directly or via `BIOS_BLK_TEXT`; §6.9). Clearing, updating, or scrolling `TEXT_BUF` never disturbs `FRAMEBUF`, behind-text sprites glide underneath text overlays, and in-front sprites (such as a pointer) float cleanly above everything.
+* **Pure Graphics Mode:** Leave `TEXT_BUF` and `TEXT_ATTR` zero-filled (`0x00`) and the hardware cursor hidden. Because default glyph `0x00` is all zeros (transparent) and reverse bit `0` is clear, `line | 0x00 == line`, leaving `FRAMEBUF` (and any enabled sprites) completely unobstructed.
+* **Pure 80×60 Text Mode:** Leave `FRAMEBUF` zero-filled (`0x00`). Only glyphs from `TEXT_BUF` (inverted via `^ 0xFF` when reversed by `TEXT_ATTR` or the hardware cursor, plus any enabled sprites) are visible (`0x00 | text_byte == text_byte`).
+* **Non-Destructive Text-over-Graphics Overlay:** Draw scenes or vector/pixel graphics into `FRAMEBUF` while writing HUDs, menus, or console output into `TEXT_BUF` / `TEXT_ATTR` (directly or via `BIOS_BLK_TEXT`; §6.9). Clearing, updating, or scrolling text never disturbs `FRAMEBUF`, behind-text sprites glide underneath text overlays, and in-front sprites (such as a pointer) float cleanly above everything.
 
 ### 5.2 Bitmap Framebuffer (`FRAMEBUF`)
-*TODO: Specify `VIDEO_FRAMEBUF_BASE` (`0x2007_4000`, `38,400` bytes): 640×480 @ 1 bpp, `80`-byte (`20`-word) scanline stride, exact byte/bit addressing formulas for pixel `(x, y)` (`byte = y * 80 + (x >> 3)`, `bit = x & 7`), **LSB-left pixel order** (bit 0 = leftmost pixel in each byte, bit 7 = rightmost), and polarity (`1` = white/lit, `0` = black/dark).*
+*TODO: Specify `VIDEO_FRAMEBUF_BASE` (`0x2007_2000`, `38,400` bytes): 640×480 @ 1 bpp, `80`-byte (`20`-word) scanline stride, exact byte/bit addressing formulas for pixel `(x, y)` (`byte = y * 80 + (x >> 3)`, `bit = x & 7`), **LSB-left pixel order** (bit 0 = leftmost pixel in each byte, bit 7 = rightmost), and polarity (`1` = white/lit, `0` = black/dark).*
 
-### 5.3 Programmable Font (`FONT_RAM`) & Text Overlay (`TEXT_BUF`)
-*TODO: Specify `VIDEO_FONT_RAM_BASE` (`0x2007_D600`, `2,048` bytes) in glyph-major order (`FONT_RAM[ch * 8 + row]`, row `0` = top, row `7` = bottom, LSB-left pixel order) and `VIDEO_TEXT_BUF_BASE` (`0x2007_DE00`, `4,800` bytes) as an 80×60 cell grid (`TEXT_BUF[row * 80 + col]`). Document the default IBM Code Page 437 font, the transparent glyph `0x00` convention, runtime custom glyph / 8×8 tile redefinition, and restoring the default font via `BIOS_VIDEO_RESET_FONT`.*
+### 5.3 Programmable Font (`FONT_RAM`), Text Overlay (`TEXT_BUF`) & Attributes (`TEXT_ATTR`)
+*TODO: Specify `VIDEO_FONT_RAM_BASE` (`0x2007_B600`, `2,048` bytes) in glyph-major order (`FONT_RAM[ch * 8 + row]`, row `0` = top, row `7` = bottom, LSB-left pixel order), `VIDEO_TEXT_BUF_BASE` (`0x2007_BE00`, `4,800` bytes) as an 80×60 cell grid (`TEXT_BUF[row * 80 + col]`), and `VIDEO_TEXT_ATTR_BASE` (`0x2007_D0C0`, `4,800` bytes) as an 80×60 per-cell attribute grid (`TEXT_ATTR[row * 80 + col]`, bit `0` = `TEXT_ATTR_REVERSE` `^ 0xFF`, bits `7:1` reserved `0`, XOR-composed with the hardware cursor). Document the default IBM Code Page 437 font, the transparent glyph `0x00` convention, runtime custom glyph / 8×8 tile redefinition, and restoring the default font via `BIOS_VIDEO_RESET_FONT`.*
 
 ### 5.4 Hardware Sprite Engine (`SPRITE_OAM`, `SPRITE_PAT`, `VIDEO_CTRL`)
 
 #### 5.4.1 Sprite Pattern Format (`SPRITE_PAT`)
-*TODO: Document `VIDEO_SPRITE_PAT_BASE` (`0x2007_F180`, `3,712` bytes): 58 patterns × 64 bytes each, split into a 32-byte Pixel Plane (`+0x00`, 16 × `uint16_t`) and a 32-byte Mask Plane (`+0x20`, 16 × `uint16_t`), LSB-left bit order (`bit 0` = column 0, `bit 15` = column 15). Explain the 3 pixel states (Transparent, Opaque Black, Opaque White) and how to build crisp outlined cursors/sprites.*
+*TODO: Document `VIDEO_SPRITE_PAT_BASE` (`0x2007_E440`, `7,104` bytes): 111 patterns × 64 bytes each, split into a 32-byte Pixel Plane (`+0x00`, 16 × `uint16_t`) and a 32-byte Mask Plane (`+0x20`, 16 × `uint16_t`), LSB-left bit order (`bit 0` = column 0, `bit 15` = column 15). Explain the 3 pixel states (Transparent, Opaque Black, Opaque White) and how to build crisp outlined cursors/sprites.*
 
 #### 5.4.2 OAM Slot Descriptor Format (`SPRITE_OAM`)
-*TODO: Document `VIDEO_SPRITE_OAM_BASE` (`0x2007_F100`, `128` bytes): 16 slots × 8 bytes each (`x`, `y`, `pattern`, `flags`, `reserved`). Specify signed clipping ranges (`x` in `-15..639`, `y` in `-15..479`), the atomic 32-bit `sw` update idiom for `[y:16 | x:16]`, pattern index range (`0..57`, out-of-range skipped), and every bit of `flags` (`ENABLE`, `HFLIP`, `VFLIP`, `BEHIND_TEXT`, and `BLEND` modes: Opaque `(bg & ~mask) | pixels`, OR `bg | pixels`, XOR `bg ^ pixels`).*
+*TODO: Document `VIDEO_SPRITE_OAM_BASE` (`0x2007_E3C0`, `128` bytes): 16 slots × 8 bytes each (`x`, `y`, `pattern`, `flags`, `reserved`). Specify signed clipping ranges (`x` in `-15..639`, `y` in `-15..479`), the atomic 32-bit `sw` update idiom for `[y:16 | x:16]`, pattern index range (`0..110`, out-of-range skipped), and every bit of `flags` (`ENABLE`, `HFLIP`, `VFLIP`, `BEHIND_TEXT`, and `BLEND` modes: Opaque `(bg & ~mask) | pixels`, OR `bg | pixels`, XOR `bg ^ pixels`).*
 
 #### 5.4.3 Priority Order & Mouse Cursor Convention
 *TODO: Explain the Slot 15 → Slot 0 draw order (lower slot index = higher visual priority) within each layer, and the convention of reserving Sprite 0 (`BEHIND_TEXT = 0`) for the floating hardware mouse cursor. Note that all 16 sprites may overlap on the same scanline with zero drop-out or flicker.*
 
 #### 5.4.4 Frame Latching vs. Dynamic Beam-Racing (`VIDEO_CTRL`)
-*TODO: Document `VIDEO_CTRL_BASE` (`0x2007_F0C0`, 64 bytes) and `VIDEO_CTRL_FLAGS_OFF` (`+0x00`), specifically `VIDEO_CTRL_LATCH_OAM_BIT` (`bit 0`): `1` (boot default) latches `SPRITE_OAM` once per frame during VBLANK for tear-free updates; `0` reads `SPRITE_OAM` live per scanline for raster/beam-racing effects.*
+*TODO: Document `VIDEO_CTRL_BASE` (`0x2007_E380`, 64 bytes) and `VIDEO_CTRL_FLAGS_OFF` (`+0x00`), specifically `VIDEO_CTRL_LATCH_OAM_BIT` (`bit 0`): `1` (boot default) latches `SPRITE_OAM` once per frame during VBLANK for tear-free updates; `0` reads `SPRITE_OAM` live per scanline for raster/beam-racing effects.*
 
 ### 5.5 VSYNC Synchronization & Video BIOS Services
 *TODO: Explain tear-free 60 Hz animation pacing using `BIOS_VIDEO_FRAME_COUNT` and `BIOS_VIDEO_WAIT_VSYNC`, and cross-reference §6.3 for exact syscall signatures.*
@@ -705,7 +708,7 @@ Every classic microcomputer display configuration emerges naturally from this si
 - *`BIOS_LED_READ` (`0x71`) — query current LED state (`0` or `1`).*
 
 ### 6.9 Text Console & Hardware Cursor (`BIOS_BLK_TEXT`, `0x80`–`0x8F`)
-*TODO: Document the BIOS-managed 80×60 text console layered atop `TEXT_BUF`, including non-destructive hardware blinking cursor inversion (never mutates `TEXT_BUF` or `FONT_RAM`), control character behavior (`\n` Unix newline, `\r` carriage return, `\b` cursor-left with reverse line wrap), automatic line wrapping and upward scrolling past row 59, and interaction with direct writes to `TEXT_BUF`. Full reference entries for:*
+*TODO: Document the BIOS-managed 80×60 text console layered atop `TEXT_BUF` and `TEXT_ATTR`, including non-destructive hardware blinking cursor inversion (XOR-composed with `TEXT_ATTR_REVERSE`, never mutates `TEXT_BUF`/`TEXT_ATTR`/`FONT_RAM`), control character behavior (`\n` Unix newline, `\r` carriage return, `\b` cursor-left with reverse line wrap), automatic line wrapping and lockstep upward/downward scrolling of `TEXT_BUF` and `TEXT_ATTR`, current text attribute written by `PUTC`/`PUTS`, and interaction with direct writes to `TEXT_BUF`/`TEXT_ATTR`. Full reference entries for:*
 - *`BIOS_TEXT_CLEAR` (`0x80`)*
 - *`BIOS_TEXT_PUTC` (`0x81`)*
 - *`BIOS_TEXT_PUTS` (`0x82`)*
@@ -714,6 +717,8 @@ Every classic microcomputer display configuration emerges naturally from this si
 - *`BIOS_TEXT_SET_CURSOR_STATE` (`0x85`)*
 - *`BIOS_TEXT_SCROLL_UP` (`0x86`)*
 - *`BIOS_TEXT_SCROLL_DOWN` (`0x87`)*
+- *`BIOS_TEXT_SET_ATTR` (`0x88`)*
+- *`BIOS_TEXT_GET_ATTR` (`0x89`)*
 
 ---
 
@@ -742,7 +747,7 @@ Every classic microcomputer display configuration emerges naturally from this si
 *TODO: Include a compact 7-bit ASCII table (`0x00–0x7F`, highlighting control codes handled by `BIOS_TEXT_PUTC`) plus a quick reference summary of the default IBM Code Page 437 high-byte glyphs (`0x80–0xFF`: box drawing, block shading, accented letters, math symbols) and the empty/transparent `0x00` glyph rule.*
 
 ### Appendix C: BIOS `ecall` Quick Reference Card
-*TODO: A single consolidated cheat-sheet table listing every BIOS service ID (`0x00`–`0x87`), symbolic name, input registers, output registers, blocking/non-blocking flag, and possible error codes for rapid lookup while coding in assembly.*
+*TODO: A single consolidated cheat-sheet table listing every BIOS service ID (`0x00`–`0x89`), symbolic name, input registers, output registers, blocking/non-blocking flag, and possible error codes for rapid lookup while coding in assembly.*
 
 ### Appendix D: Public ABI Header (`include/abi/*.h`) Symbol Index
 *TODO: A compact index grouping all public `#define` constants by header file (`memory_map.h`, `boot_header.h`, `bios_abi.h`, `devices.h`, `keycodes.h`) so programmers know which header to `#include` for any constant.*

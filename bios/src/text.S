@@ -2,17 +2,22 @@
  * ============================================================================
  * Oasis32 Stage-1 BIOS — Text Console & Hardware Cursor (BIOS_BLK_TEXT, 0x80)
  * ============================================================================
- * Manages the 80x60 TEXT_BUF (0x2007DE00, 4,800 B) and the BIOS-owned hardware
- * text cursor state stored atomically in USB DPRAM (BIOS_CURSOR_STATE_ADDR):
+ * Manages the 80x60 TEXT_BUF (0x2007BE00, 4,800 B), the parallel 80x60
+ * TEXT_ATTR attribute buffer (0x2007D0C0, 4,800 B, bit 0 = reverse ^ 0xFF),
+ * the current console attribute (BIOS_TEXT_ATTR_CUR_ADDR), and the BIOS-owned
+ * hardware text cursor state stored atomically in USB DPRAM
+ * (BIOS_CURSOR_STATE_ADDR):
  *   bits [7:0]   = col (0..79)
  *   bits [15:8]  = row (0..59)
  *   bits [23:16] = visible (0 = hidden, 1 = visible)
  *   bits [31:24] = blink_frames (0 = solid, 1..255 = 60 Hz half-period)
  *
  * Core 1 latches this 32-bit word once per frame during VBLANK and inverts
- * (^ 0xFF) the active 8x8 cell non-destructively during Layer 3 compositing.
+ * (^ 0xFF) the active 8x8 glyph non-destructively before OR-compositing in
+ * Layer 3 (composing via XOR with TEXT_ATTR reverse so the cursor stays
+ * visible over reversed cells without inverting underlying graphics).
  *
- * Exposes BIOS_BLK_TEXT (0x80-0x87):
+ * Exposes BIOS_BLK_TEXT (0x80-0x89):
  *   - text_clear            ()                  -> ERR_OK
  *   - text_putc             (a0=ch)             -> ERR_OK
  *   - text_puts             (a0=cstr_ptr)       -> ERR_OK or ERR_INVALID_ARG
@@ -21,9 +26,11 @@
  *   - text_set_cursor_state (a0=vis, a1=frames) -> ERR_OK or ERR_INVALID_ARG
  *   - text_scroll_up        (a0=lines)          -> ERR_OK
  *   - text_scroll_down      (a0=lines)          -> ERR_OK
+ *   - text_set_attr         (a0=attr)           -> ERR_OK or ERR_INVALID_ARG
+ *   - text_get_attr         ()                  -> a0=attr (0 or 1)
  *
  * References:
- *   - include/abi/bios_abi.h (BIOS_BLK_TEXT 0x80-0x87)
+ *   - include/abi/bios_abi.h (BIOS_BLK_TEXT 0x80-0x89)
  *   - docs/VideoArchitecture.md §2-§3
  * ============================================================================
  */
@@ -37,14 +44,14 @@
 
 /* ----------------------------------------------------------------------------
  * text_clear() -> a0 = ERR_OK (0)
- *   Zero-fills TEXT_BUF (4,800 B) and resets cursor to (0, 0), preserving
- *   visibility and blink rate.
+ *   Zero-fills TEXT_BUF (4,800 B) and TEXT_ATTR (4,800 B) and resets cursor
+ *   to (0, 0), preserving visibility, blink rate, and current text attribute.
  * ---------------------------------------------------------------------------- */
 .global text_clear
 .type text_clear, @function
 text_clear:
     li      t0, VIDEO_TEXT_BUF_BASE
-    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+    li      t1, VIDEO_TEXT_ATTR_BASE + VIDEO_TEXT_ATTR_SIZE
 1:
     sw      zero, 0(t0)
     addi    t0, t0, 4
@@ -134,8 +141,8 @@ text_set_cursor_state:
 
 /* ----------------------------------------------------------------------------
  * text_scroll_up(a0 = lines) -> a0 = ERR_OK (0)
- *   Scrolls TEXT_BUF up by `lines` rows, filling bottom rows with 0x00.
- *   Does not alter cursor coordinates.
+ *   Scrolls TEXT_BUF and TEXT_ATTR up by `lines` rows in lockstep, filling
+ *   bottom rows of both buffers with 0x00. Does not alter cursor coordinates.
  * ---------------------------------------------------------------------------- */
 .global text_scroll_up
 .type text_scroll_up, @function
@@ -145,29 +152,37 @@ text_scroll_up:
     li      t0, VIDEO_TEXT_ROWS
     bgeu    a0, t0, scroll_up_zero_all
 
-    /* Forward word copy: dst = BASE, src = BASE + lines * 80, until src == END */
+    /* Forward word copy in lockstep for TEXT_BUF and TEXT_ATTR */
     li      t0, VIDEO_TEXT_COLS
     mul     t0, a0, t0                      /* byte_shift = lines * 80 */
-    li      t1, VIDEO_TEXT_BUF_BASE         /* dst */
-    add     t2, t1, t0                      /* src */
+    li      t1, VIDEO_TEXT_BUF_BASE         /* dst_buf */
+    add     t2, t1, t0                      /* src_buf */
     li      t3, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+    li      t5, VIDEO_TEXT_ATTR_BASE        /* dst_attr */
+    add     t6, t5, t0                      /* src_attr */
 1:
     lw      t4, 0(t2)
     sw      t4, 0(t1)
+    lw      t4, 0(t6)
+    sw      t4, 0(t5)
     addi    t1, t1, 4
     addi    t2, t2, 4
+    addi    t5, t5, 4
+    addi    t6, t6, 4
     bltu    t2, t3, 1b
 
-    /* Zero-fill bottom `lines` rows from dst..END */
+    /* Zero-fill bottom `lines` rows in both TEXT_BUF and TEXT_ATTR */
 2:
     sw      zero, 0(t1)
+    sw      zero, 0(t5)
     addi    t1, t1, 4
+    addi    t5, t5, 4
     bltu    t1, t3, 2b
     j       scroll_up_done
 
 scroll_up_zero_all:
     li      t1, VIDEO_TEXT_BUF_BASE
-    li      t3, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+    li      t3, VIDEO_TEXT_ATTR_BASE + VIDEO_TEXT_ATTR_SIZE
 3:
     sw      zero, 0(t1)
     addi    t1, t1, 4
@@ -180,8 +195,8 @@ scroll_up_done:
 
 /* ----------------------------------------------------------------------------
  * text_scroll_down(a0 = lines) -> a0 = ERR_OK (0)
- *   Scrolls TEXT_BUF down by `lines` rows, filling top rows with 0x00.
- *   Does not alter cursor coordinates.
+ *   Scrolls TEXT_BUF and TEXT_ATTR down by `lines` rows in lockstep, filling
+ *   top rows of both buffers with 0x00. Does not alter cursor coordinates.
  * ---------------------------------------------------------------------------- */
 .global text_scroll_down
 .type text_scroll_down, @function
@@ -191,30 +206,39 @@ text_scroll_down:
     li      t0, VIDEO_TEXT_ROWS
     bgeu    a0, t0, scroll_down_zero_all
 
-    /* Backward word copy: dst = END, src = END - lines * 80, down to BASE */
+    /* Backward word copy in lockstep for TEXT_BUF and TEXT_ATTR */
     li      t0, VIDEO_TEXT_COLS
     mul     t0, a0, t0                      /* byte_shift = lines * 80 */
     li      t3, VIDEO_TEXT_BUF_BASE         /* base floor */
-    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE /* dst */
-    sub     t2, t1, t0                      /* src */
+    li      t1, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE /* dst_buf */
+    sub     t2, t1, t0                      /* src_buf */
+    li      t5, VIDEO_TEXT_ATTR_BASE + VIDEO_TEXT_ATTR_SIZE /* dst_attr */
+    sub     t6, t5, t0                      /* src_attr */
 1:
     addi    t1, t1, -4
     addi    t2, t2, -4
     lw      t4, 0(t2)
     sw      t4, 0(t1)
+    addi    t5, t5, -4
+    addi    t6, t6, -4
+    lw      t4, 0(t6)
+    sw      t4, 0(t5)
     bgtu    t2, t3, 1b
 
-    /* Zero-fill top `lines` rows from BASE..BASE + byte_shift */
+    /* Zero-fill top `lines` rows in both TEXT_BUF and TEXT_ATTR */
     add     t2, t3, t0
+    li      t5, VIDEO_TEXT_ATTR_BASE
 2:
     sw      zero, 0(t3)
+    sw      zero, 0(t5)
     addi    t3, t3, 4
+    addi    t5, t5, 4
     bltu    t3, t2, 2b
     j       scroll_down_done
 
 scroll_down_zero_all:
     li      t1, VIDEO_TEXT_BUF_BASE
-    li      t3, VIDEO_TEXT_BUF_BASE + VIDEO_TEXT_BUF_SIZE
+    li      t3, VIDEO_TEXT_ATTR_BASE + VIDEO_TEXT_ATTR_SIZE
 3:
     sw      zero, 0(t1)
     addi    t1, t1, 4
@@ -258,13 +282,18 @@ text_putc:
     li      t0, '\b'
     beq     s0, t0, putc_bs
 
-    /* Normal glyph write at TEXT_BUF[row * 80 + col] */
+    /* Normal glyph write at TEXT_BUF[row * 80 + col] and attr at TEXT_ATTR[...] */
     li      t0, VIDEO_TEXT_COLS
     mul     t0, s2, t0
-    add     t0, t0, s1
+    add     t0, t0, s1                      /* t0 = cell offset (0..4799) */
     li      t1, VIDEO_TEXT_BUF_BASE
-    add     t0, t1, t0
-    sb      s0, 0(t0)
+    add     t1, t1, t0
+    sb      s0, 0(t1)
+    li      t1, BIOS_TEXT_ATTR_CUR_ADDR
+    lbu     t2, 0(t1)
+    li      t1, VIDEO_TEXT_ATTR_BASE
+    add     t1, t1, t0
+    sb      t2, 0(t1)
 
     /* Advance col; wrap to next line at col == 80 */
     addi    s1, s1, 1
@@ -359,3 +388,34 @@ puts_invalid_early:
     li      a0, ERR_INVALID_ARG
     ret
 .size text_puts, . - text_puts
+
+/* ----------------------------------------------------------------------------
+ * text_set_attr(a0 = attr) -> a0 = ERR_OK or ERR_INVALID_ARG
+ *   Sets the current text attribute byte written by text_putc / text_puts.
+ *   Valid values: TEXT_ATTR_NORMAL (0x00) or TEXT_ATTR_REVERSE (0x01).
+ *   Reserved bits [31:1] must be 0.
+ * ---------------------------------------------------------------------------- */
+.global text_set_attr
+.type text_set_attr, @function
+text_set_attr:
+    andi    t0, a0, ~TEXT_ATTR_REVERSE
+    bnez    t0, 1f
+    li      t0, BIOS_TEXT_ATTR_CUR_ADDR
+    sw      a0, 0(t0)
+    li      a0, ERR_OK
+    ret
+1:
+    li      a0, ERR_INVALID_ARG
+    ret
+.size text_set_attr, . - text_set_attr
+
+/* ----------------------------------------------------------------------------
+ * text_get_attr() -> a0 = current text attribute byte (0 or 1)
+ * ---------------------------------------------------------------------------- */
+.global text_get_attr
+.type text_get_attr, @function
+text_get_attr:
+    li      t0, BIOS_TEXT_ATTR_CUR_ADDR
+    lw      a0, 0(t0)
+    ret
+.size text_get_attr, . - text_get_attr

@@ -87,7 +87,7 @@ trap_sync_entry:
      *   0x50:      Timer Services (TIMER0 1 us monotonic clock)
      *   0x60:      Audio Services (Piezo Buzzer)
      *   0x70-0x71: Status LED Services (Red/Green/Blue)
-     *   0x80-0x87: Text Console & Hardware Cursor Services (80x60 TEXT_BUF)
+     *   0x80-0x89: Text Console & Hardware Cursor Services (80x60 TEXT_BUF/ATTR)
      * ------------------------------------------------------------------------ */
     li      t0, BIOS_SYS_VERSION
     beq     a7, t0, svc_sys_version
@@ -173,6 +173,10 @@ trap_sync_entry:
     beq     a7, t0, svc_text_scroll_up
     li      t0, BIOS_TEXT_SCROLL_DOWN
     beq     a7, t0, svc_text_scroll_down
+    li      t0, BIOS_TEXT_SET_ATTR
+    beq     a7, t0, svc_text_set_attr
+    li      t0, BIOS_TEXT_GET_ATTR
+    beq     a7, t0, svc_text_get_attr
 
     li      a0, ERR_UNSUPPORTED
     j       ecall_return
@@ -344,6 +348,14 @@ svc_text_scroll_up:
 
 svc_text_scroll_down:
     call    text_scroll_down
+    j       ecall_return
+
+svc_text_set_attr:
+    call    text_set_attr
+    j       ecall_return
+
+svc_text_get_attr:
+    call    text_get_attr
     j       ecall_return
 
 ecall_os_extension:

@@ -922,11 +922,15 @@ boot_handoff_and_jump:
     li      a7, BIOS_KEYBOARD_SET_REPEAT
     ecall
 
-    /* 4. Reset Video RAM: hide cursor, clear TEXT_BUF, zero FRAMEBUF/CTRL/OAM/PAT,
-     *    reload default CP437 font, enable VIDEO_CTRL.LATCH_OAM */
+    /* 4. Reset Video RAM: hide cursor, reset text attr, clear TEXT_BUF/ATTR,
+     *    zero FRAMEBUF/CTRL/OAM/PAT, reload default CP437 font, enable LATCH_OAM */
     li      a0, 0
     li      a1, 0
     li      a7, BIOS_TEXT_SET_CURSOR_STATE
+    ecall
+
+    li      a0, TEXT_ATTR_NORMAL
+    li      a7, BIOS_TEXT_SET_ATTR
     ecall
 
     li      a7, BIOS_TEXT_CLEAR

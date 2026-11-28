@@ -16,15 +16,15 @@ The goal is *not* to converge on mainstream standards like C, POSIX, UNIX, or FA
 
 * **Bare-Metal 32-Bit RISC-V Architecture**
   * Single-core Hazard3 RISC-V (RV32IMAC) processor running at 126 MHz
-  * 464 KB of contiguous User SRAM plus 48 KB of directly accessible video RAM.
+  * 456 KB of contiguous User SRAM plus 56 KB of directly accessible video RAM.
 * **640×480 @ 60 Hz Monochrome HDMI Display**
   * Unified graphics and text overlay (no mode switching)
   * 640x480 1bpp monochrome memory-mapped framebuffer for bitmap graphics
-  * 80x60 memory-mapped character text buffer that overlays the bitmap graphics with bitwise `OR`
+  * 80x60 memory-mapped character text buffer that overlays the bitmap graphics with bitwise `OR`, paired with an 80x60 per-cell attribute buffer supporting reverse video (`^ 0xFF`)
   * User-modifiable 256-glyph 8x8 memory-mapped font (IBM Code Page 437 character set)
-  * Optional non-destructive hardware blinking text cursor (inverts the active 8x8 cell on-the-fly without modifying the text buffer)
+  * Optional non-destructive hardware blinking text cursor (inverts the active 8x8 cell via XOR on-the-fly without modifying the text buffer, staying clearly visible over reversed cells)
   * Zero the text buffer for pure bitmap graphics, zero the framebuffer for pure text mode, or use both at the same time!
-  * 16 16x16 hardware sprites, assignable to 58 memory-mapped animation/tile patterns, each with its own opacity mask
+  * 16 16x16 hardware sprites, assignable to 111 memory-mapped animation/tile patterns, each with its own opacity mask
   * Sprites support horizontal and vertical flipping, three blending modes (opaque, bitwise OR, bitwise XOR), and can render above or below the text layer
   * Sprite zero conventionally used as a customizable hardware mouse cursor
   * A second Hazard3 core acts as a dedicated video coprocessor driving all of the above with zero CPU overhead and no required synchronization on the main core.

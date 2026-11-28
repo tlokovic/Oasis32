@@ -13,8 +13,9 @@
  *   - Piezo Audio (BIOS_AUDIO_TONE): 100 ms @ 1 kHz beep every 3 s
  *   - DVI Framebuffer (VIDEO_FRAMEBUF_BASE): 1 px border + 20x15 grid +
  *     bouncing 32x32 XOR box (~60 px/s) scanned out by Core 1
- *   - DVI Text Overlay (VIDEO_TEXT_BUF_BASE): bouncing "Oasis32" string at
- *     character granularity starting from top-right, OR-composited by Core 1
+ *   - DVI Text Overlay (VIDEO_TEXT_BUF_BASE / VIDEO_TEXT_ATTR_BASE): bouncing
+ *     "Oasis32" string over tiled CP437 glyphs, toggling all 80x60 TEXT_ATTR
+ *     cells between normal and reverse (^ 0xFF) every 5 s for worst-case load
  *   - Hardware Sprites (SPRITE_OAM / SPRITE_PAT): all 16 16x16 'R' sprites
  *     starting at y=232 and bouncing in [4..460] at 1x/2x/4x speeds so all 16
  *     periodically reconverge on one scanline!
@@ -32,6 +33,7 @@
 #define DEMO_PIEZO_FREQ_HZ          0 // 1000
 #define DEMO_VIDEO_STEP_US          16667   /* ~60 px/s (1 px per 60 Hz frame) */
 #define DEMO_TEXT_STEP_US           125000  /* 8 cells/s (64 px/s) */
+#define DEMO_ATTR_INTERVAL_US       5000000 /* Toggle all 80x60 TEXT_ATTR every 5 s */
 
 #define DEMO_BOX_SIZE_PX            32
 #define DEMO_BOX_MIN_X              1
@@ -69,6 +71,8 @@
 #define STK_SD_NEXT_US              48      /* Next 1 s write/read/verify deadline */
 #define STK_SD_LBA                  52      /* Rotating LBA (1024..1039) */
 #define STK_SD_ITER                 56      /* Monotonic pattern iteration */
+#define STK_ATTR_NEXT_US            60      /* Next 5 s full-screen TEXT_ATTR toggle */
+#define STK_ATTR_STATE              64      /* 0=normal, 1=all cells reversed */
 
 /* Assemble-time 16-pixel ASCII-art sprite row encoders (char 0 -> bit 0 LSB):
  *   '#' = opaque white (pixel=1, mask=1)
@@ -187,6 +191,14 @@ hardware_demo:
     addi    t1, t1, 1
     bltu    t1, t2, 1b
 
+    /* Clear all 80x60 TEXT_ATTR cells to normal polarity (0x00) */
+    li      t0, VIDEO_TEXT_ATTR_BASE
+    li      t1, VIDEO_TEXT_ATTR_BASE + VIDEO_TEXT_ATTR_SIZE
+3:
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t1, 3b
+
     /* Place initial "Oasis32" text overlay at top-right corner (col=72, row=1) */
     li      t0, DEMO_TEXT_MAX_COL
     sw      t0, STK_TEXT_COL(sp)
@@ -240,12 +252,17 @@ hardware_demo:
     li      t0, DEMO_PIEZO_PERIOD_US
     add     s3, s0, t0                  /* s3 = next_piezo_us */
 
-    /* Schedule first bouncing-box step (16.67 ms) and text step (125 ms) */
+    /* Schedule first bouncing-box step (16.67 ms), text step (125 ms), and
+     * 5 s full-screen TEXT_ATTR reverse toggle */
     li      t0, DEMO_VIDEO_STEP_US
     add     s6, s0, t0                  /* s6 = next_video_us */
     li      t0, DEMO_TEXT_STEP_US
     add     t0, s0, t0
     sw      t0, STK_TEXT_NEXT_US(sp)
+    sw      zero, STK_ATTR_STATE(sp)
+    li      t0, DEMO_ATTR_INTERVAL_US
+    add     t0, s0, t0
+    sw      t0, STK_ATTR_NEXT_US(sp)
 
     /* Initialize SD test state (BIOS_SD_STATUS provides debounced CD) */
     sw      zero, STK_SD_PRESENT(sp)
@@ -415,7 +432,7 @@ check_text:
     /* 5. Non-blocking bouncing "Oasis32" text overlay on VIDEO_TEXT_BUF_BASE */
     lw      t1, STK_TEXT_NEXT_US(sp)
     sub     t0, s0, t1
-    bltz    t0, check_sd
+    bltz    t0, check_attr
 
     /* Erase old string with transparent 0x00 cells */
     lw      a0, STK_TEXT_COL(sp)
@@ -467,6 +484,32 @@ check_text:
     li      t0, DEMO_TEXT_STEP_US
     add     t1, t1, t0
     sw      t1, STK_TEXT_NEXT_US(sp)
+
+check_attr:
+    /* 5b. Every 5 s, toggle all 80x60 TEXT_ATTR cells between normal (0x00)
+     *     and reverse (0x01) to stress-test worst-case Core 1 scanline load
+     *     and verify hardware cursor XOR-cancellation over reversed cells. */
+    lw      t1, STK_ATTR_NEXT_US(sp)
+    sub     t0, s0, t1
+    bltz    t0, check_sd
+
+    lw      t2, STK_ATTR_STATE(sp)
+    xori    t2, t2, 1
+    sw      t2, STK_ATTR_STATE(sp)
+    li      t3, 0
+    beqz    t2, 9f
+    li      t3, 0x01010101              /* 4 reversed TEXT_ATTR bytes */
+9:
+    li      t0, VIDEO_TEXT_ATTR_BASE
+    li      t4, VIDEO_TEXT_ATTR_BASE + VIDEO_TEXT_ATTR_SIZE
+10:
+    sw      t3, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t4, 10b
+
+    li      t0, DEMO_ATTR_INTERVAL_US
+    add     t1, t1, t0
+    sw      t1, STK_ATTR_NEXT_US(sp)
 
 check_sd:
     /* 6. SD Card hot-plug detection & 1/s rotating 512-B write/read/verify */
