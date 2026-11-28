@@ -569,13 +569,44 @@ Because the BIOS stores each active `ecall`'s return state on the **caller's sta
 ## 5. Video Subsystem & Display Programming
 
 ### 5.1 Unified Display Architecture
-*TODO: Explain the 640×480 @ 60 Hz monochrome unified display model (zero mode switching) and illustrate the deterministic 4-layer scanline compositing pipeline:*
-1. *`FRAMEBUF` (bottom bitmap layer)*
-2. *Behind-text sprites (`BEHIND_TEXT = 1`, Slot 15 → Slot 0)*
-3. *`TEXT_BUF` / `FONT_RAM` (OR-composited) + non-destructive hardware text cursor inversion (`^ 0xFF`)*
-4. *In-front sprites (`BEHIND_TEXT = 0`, Slot 15 → Slot 0)*
 
-*Explain how pure graphics mode, pure 80×60 text mode, and combined text-over-graphics overlay all emerge naturally from this single pipeline.*
+Oasis32 drives a fixed **640×480 @ 60 Hz** 1-bit monochrome display (`VIDEO_WIDTH = 640`, `VIDEO_HEIGHT = 480`, `VIDEO_REFRESH_HZ = 60` in `include/abi/devices.h`). Scanout and compositing run continuously and autonomously with **zero CPU overhead**: software simply reads and writes the 48 KB Public Video RAM block (§2.3) and optionally paces updates with `BIOS_VIDEO_WAIT_VSYNC` (§5.5).
+
+Rather than providing separate "text" and "graphics" video modes, Oasis32 uses a **single unified display model** with zero mode switching. On every active scanline (`y = 0..479`), the display subsystem builds the 640-pixel output line through a deterministic **4-layer compositing pipeline**:
+
+```text
+  Layer 1 (Bottom):  FRAMEBUF (640×480 1 bpp bitmap)
+                        │
+                        ▼
+  Layer 2:           Behind-Text Sprites (SPRITE_FLAG_BEHIND_TEXT = 1)
+                        • Active slots composited Slot 15 → Slot 0
+                        │
+                        ▼
+  Layer 3:           TEXT_BUF + FONT_RAM (80×60 8×8 glyph grid, OR-composited)
+                        • Plus non-destructive hardware text cursor (^ 0xFF)
+                        │
+                        ▼
+  Layer 4 (Top):     In-Front Sprites (SPRITE_FLAG_BEHIND_TEXT = 0)
+                        • Active slots composited Slot 15 → Slot 0
+                        │
+                        ▼
+                     640×480 @ 60 Hz Display Output
+```
+
+#### Layer Breakdown
+
+1. **Bitmap Framebuffer (`FRAMEBUF`):** Provides the base 640×480 1 bpp monochrome pixel canvas (`1` = white/lit, `0` = black/dark; §5.2).
+2. **Behind-Text Hardware Sprites (`BEHIND_TEXT = 1`):** Enabled 16×16 sprites with `SPRITE_FLAG_BEHIND_TEXT` set are composited over `FRAMEBUF` in **Slot 15 → Slot 0** order (lower slot index has higher visual priority) using each sprite's selected blend mode (Opaque, OR, or XOR; §5.4).
+3. **Text Overlay (`TEXT_BUF` / `FONT_RAM`) & Hardware Cursor:** For each 8-pixel character column, the glyph row indexed by `TEXT_BUF` in `FONT_RAM` is bitwise **`OR`-composited** onto the scanline (`line | glyph_byte`; §5.3). If the BIOS hardware text cursor is visible and currently in its "on" blink phase (§6.9), the active cell's 8-pixel slice is inverted (`^ 0xFF`) during scanout—leaving `TEXT_BUF` and `FONT_RAM` completely untouched.
+4. **In-Front Hardware Sprites (`BEHIND_TEXT = 0`):** Enabled 16×16 sprites with `SPRITE_FLAG_BEHIND_TEXT` clear are composited last in **Slot 15 → Slot 0** order. By convention, **Sprite 0** (`BEHIND_TEXT = 0`) floats above all graphics, text, and other sprites as a hardware mouse cursor (§5.4.3).
+
+#### Emergent Display Modes (Zero Mode Switching)
+
+Every classic microcomputer display configuration emerges naturally from this single pipeline:
+
+* **Pure Graphics Mode:** Leave `TEXT_BUF` zero-filled (`0x00`) and the hardware cursor hidden. Because default glyph `0x00` is all zeros (transparent), `line | 0x00 == line`, leaving `FRAMEBUF` (and any enabled sprites) completely unobstructed.
+* **Pure 80×60 Text Mode:** Leave `FRAMEBUF` zero-filled (`0x00`). Only glyphs from `TEXT_BUF` (plus the hardware cursor and any enabled sprites) are visible (`0x00 | glyph_byte == glyph_byte`).
+* **Non-Destructive Text-over-Graphics Overlay:** Draw scenes or vector/pixel graphics into `FRAMEBUF` while writing HUDs, menus, or console output into `TEXT_BUF` (directly or via `BIOS_BLK_TEXT`; §6.9). Clearing, updating, or scrolling `TEXT_BUF` never disturbs `FRAMEBUF`, behind-text sprites glide underneath text overlays, and in-front sprites (such as a pointer) float cleanly above everything.
 
 ### 5.2 Bitmap Framebuffer (`FRAMEBUF`)
 *TODO: Specify `VIDEO_FRAMEBUF_BASE` (`0x2007_4000`, `38,400` bytes): 640×480 @ 1 bpp, `80`-byte (`20`-word) scanline stride, exact byte/bit addressing formulas for pixel `(x, y)` (`byte = y * 80 + (x >> 3)`, `bit = x & 7`), **LSB-left pixel order** (bit 0 = leftmost pixel in each byte, bit 7 = rightmost), and polarity (`1` = white/lit, `0` = black/dark).*
