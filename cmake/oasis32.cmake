@@ -182,6 +182,7 @@ function(oasis32_add_disk_executable TARGET_NAME)
     endif()
 
     set(_patch_crc_script "${CMAKE_SOURCE_DIR}/cmake/patch_oa32_crc.py")
+    set(_send_oa32_script "${CMAKE_SOURCE_DIR}/cmake/send_oa32.py")
 
     add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
         COMMAND ${CMAKE_OBJDUMP} -h $<TARGET_FILE:${TARGET_NAME}> > $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.dis
@@ -189,6 +190,14 @@ function(oasis32_add_disk_executable TARGET_NAME)
         COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:${TARGET_NAME}> $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.oa32
         COMMAND ${Python3_EXECUTABLE} "${_patch_crc_script}" $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.oa32
         COMMENT "Generating ${TARGET_NAME}.dis and CRC-stamped ${TARGET_NAME}.oa32 disk image"
+        VERBATIM
+    )
+
+    add_custom_target(send_${TARGET_NAME}
+        DEPENDS ${TARGET_NAME}
+        COMMAND ${Python3_EXECUTABLE} "${_send_oa32_script}" $<TARGET_FILE_DIR:${TARGET_NAME}>/${TARGET_NAME}.oa32
+        COMMENT "Sending ${TARGET_NAME}.oa32 to Oasis32 over UART0"
+        USES_TERMINAL
         VERBATIM
     )
 endfunction()
